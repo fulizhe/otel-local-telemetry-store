@@ -10,24 +10,86 @@
 
 ## 一、Phase 4b 端到端的验收信号
 
-起一次 `demo-app`、造点数据、停掉进程，**这两行日志就是全部验收信号**：
+**扩展的日志不在 `demo.log` 里，在 `demo.err.log` 里。** agent 把 `java.util.logging`
+改到了自己的 logger（输出到 stderr），`scripts/run-with-agent.ps1` 把 stdout / stderr
+分别重定向到 `demo.log` / `demo.err.log` —— 所以验收信号要**看 stderr 那份**。
+
+> 读 `demo.err.log` 时**别加 `-Encoding UTF8`**：agent 那份 JUL 输出用的是平台编码
+> （本机是 GBK），用 UTF8 读会得到一片乱码（`已注册` 显示成 `��ע��`）。
+
+起一次 `demo-app`、造点数据，**下面这两行日志就是全部验收信号**
+（在 `demo-app\target\demo.err.log` 里）：
 
 - 启动时：`已注册三条采集管线 … store=ready jmxReadout=io.github.fulizhe.otelstore:name=LocalStoreSummary`
-- 停进程时：`退出 … | store spans=N logs=N metricPoints=N resources=M`
+- **每 60 秒自动一行**：`周期 dataDir=… | traces offered=… sinkErrors=… backlog=… | logs … | metrics … | store spans=N logs=N metricPoints=N resources=M`
+- 优雅关停时再有一行：同格式，前缀是 `退出` 而不是 `周期`
 
-**停进程那行的 N 应该与 `GET /demo/stats` 对得上。** 差额不是 bug，是 ADR-3 的那几种形态
-（采样、SDK 截断、队列丢弃）—— `/demo/stats` 是"本应用造了多少"的期望值，
-这个对照是发现"数据少了"的**唯一手段**（第 4 种与 sampling 都是黑箱，原理上不可计数）。
+**判据是 `store=` 后面那四个数**，其中 `metricPoints` 只有这两行能报 ——
+metrics 是纯内存表，没有磁盘痕迹，进程一停就没了。
+
+**为什么有"每 60 秒"这一行**：关停钩子**不是可靠信号**。`Stop-Process` /
+`taskkill` / `kill` 走的是 `TerminateProcess`，**shutdown hook 根本不执行** ——
+2026-10-04 首次端到端就是这样丢掉了唯一的 metrics 证据。
+所以周期汇总不是"多打一行日志"，而是**把验收信号从"怎么停"上解耦**：
+口径完全复用关停那一行（同一个 `logSummary`），不新增格式、不新增计数器，
+避免"两套汇总口径"这种最容易对不上的东西。存储层不可用时**不打**这一行 ——
+启动时已经有一条警告了，每分钟重复只是噪声。
+
+**`store=ready` 是真正的启动判据**，不是 `已注册三条采集管线` —— 后者在存储层开不起来时
+照样打（那行末尾就带着 `store=unavailable`）。
+
+**`store spans=N` 应当 ≥ `GET /demo/stats` 的 span 计数。** 差额来自 agent 对
+你发请求本身的 HTTP 仪表化（每个 curl 都产生 server span），而 `/demo/stats`
+只数应用自己造的。**只有 N 明显小于 `/demo/stats` 才是真丢了。**
+
+### 怎么停（关系到能不能拿到 `退出` 那一行）
+
+```powershell
+# 脚本用 -NoNewWindow 起，java 与脚本共用控制台：
+#   在**跑脚本的那个窗口**按 Ctrl-C → 优雅关停 → 打出「退出 …」
+Stop-Process -Id <pid>     # 强杀：无 shutdown hook，拿不到「退出」那一行（但有「周期」行）
+```
 
 ### 失败判据
 
 | 看到什么 | 说明什么 |
 | --- | --- |
 | 启动日志没有 `已注册三条采集管线` | 扩展 jar 没挂上。脚本已校验路径，所以更可能是 jar 内部坏了 |
-| 有 `store=unavailable` | 存储层开不起来，**数据目录不可写** —— 看那一行后面的异常 |
-| 注册成功但退出那行 `store spans=0` | 翻译或落库在丢。看 JMX 里的 `sinkErrors` |
-| `store spans=N` 与 `/demo/stats` 对不上 | 差额落在 ADR-3 的第 1 / 4 / 5 种上 |
+| `store=unavailable` + `No suitable driver` | **H2 驱动没注册上**。`DriverManager` 靠 TCCL 扫 service 文件，agent 启动时 TCCL 看不见扩展 jar。已在 `LocalStore.ensureDriver()` 显式 `org.h2.Driver.load()` 修掉 |
+| `store=unavailable` + 别的异常 | 存储层开不起来，**数据目录不可写** —— 看那一行后面的异常 |
+| `store=ready` 但满屏 `载荷编码失败` + `ExceptionInInitializerError` / `NoClassDefFoundError: Could not initialize class io.opentelemetry.proto…` | **protobuf 版本冲突**：agent 自带未重定位的 protobuf，而扩展 ClassLoader 是父优先，我们那份没被加载。已在 pom 里 relocation 修掉，见 R0 笔记第十节 |
+| `store=ready` 但 `store spans=0 logs=0 metricPoints=0` 一直不变 | 没造数据，或造的那条路径没接上。先确认 `/demo/spans` 真的被调用过 |
+| 周期行的 `drained` 远小于 `offered`，`backlog` 不为 0 | drainer 跟不上（落盘慢或存储阻塞）。`backlog` 持续增长才是问题 |
+| `sinkErrors` 不为 0 | 有记录落库失败。看第一次的 WARN（带栈），后面的是重复 |
 | 期望 `N` 有值但某个信号恒为 0 | 先确认那个信号在 `demo-app` 里真的造了东西，再怀疑存储层 |
+
+**两条已经真踩到的坑，共同形状是"进程内测试全绿、只有挂 agent 才炸"**：
+一个靠 TCCL（`DriverManager`），一个靠 ClassLoader 委托顺序（protobuf 版本）。
+细节与证据分别在下面两节与 R0 笔记第十节。
+
+### `No suitable driver`：只在挂 agent 时出现的坑
+
+第一次挂 agent（2026-10-04 20:41）存储层开不起来，报
+`java.sql.SQLException: No suitable driver`。**同一次提交的全部单元测试都是绿的** ——
+差别只在 ClassLoader：
+
+- `DriverManager` 在**类初始化**时用一次 `ServiceLoader.load(Driver.class)` 扫
+  `META-INF/services/java.sql.Driver`，而那次扫描用的是**线程上下文 ClassLoader**；
+- agent 在 main 线程上初始化我们，此时 TCCL 是应用的 `AppClassLoader`，
+  它**看不见 shade 进扩展 jar 的 H2**；
+- 那次扫描一辈子只做一次，扫不到就永远扫不到。
+
+**修法**：`LocalStore.ensureDriver()` 显式调 `org.h2.Driver.load()`（幂等）。
+
+### 异常只打 `toString()` 会把排查时间拖长
+
+第一次定位上面那两个坑时，日志里只有 `java.lang.ExceptionInInitializerError` 一行 ——
+因为 `ThrottledLogger` 当时是 `warn(key, msg + e)`，**`Throwable.toString()` 不含 cause 链**，
+真正的答案（`validateProtobufGencodeVersion` 抛的那一行）根本不在日志里。
+最后是去 agent jar 里查 protobuf 版本才定位到的。
+
+已改成 `warn(key, msg, cause)`，走 `LOGGER.log(level, msg, throwable)`。
+**教训：观测路径上打异常一律用带 throwable 的重载**，靠字符串拼接省下的那一个参数不值。
 
 ## 二、不看日志也能查：JMX 读口
 
@@ -94,14 +156,23 @@ pwsh -NoProfile -File scripts/run-with-agent.ps1            # 端到端，长驻
   **唯一的调用方在内存模式下是空的**，没人触发。**写"会不会发生"之前先找调用方。**
 - **同一份取舍要前后一致。** ADR-4 里我用"文件锁是硬伤"论证了选 H2 内存模式，
   却没把同一条论据套在**自家的环形文件**上（它同样没有 `FileLock`、文件头没有实例标识）。
-  是被追问才暴露的。
+  是被追问才暴露的。ADR-5 初版"不做 relocation"也是同一类错 ——
+  见那篇的「已作废」小节。
+- **决策不能靠推理定稿。** ADR-5 那条论证当时看着挺顺，只有真挂一次 agent 才暴露它是错的。
+  **能在真环境里验的事实，就别用推理定案**；推理只配用来决定"哪些必须去验"。
 - **主体与靶子别搞混。** `demo-app` 是验证主体用的工具与可视化验收面，不是交付物。
 
 ### 环境
 
+- **`Stop-Process` 是强杀，不触发 shutdown hook。** 见第一节。
+- **跑着的 java 进程会锁住 `target` 里的 jar**，`mvn clean` 因此失败
+  （`Failed to delete …-shaded.jar`）。先停进程再 clean。
+- **`RandomAccessFile.writeLong` 是大端。** 想直接读环文件的 `currIndex` 自查，
+  用 `BitConverter` 解出来是错的（会得到天文数字）；要么按大端解，要么干脆别解 ——
+  那 16B 文件头的语义见 `CappedFileStorage` 的类注释。
 - **端口 18080 被本机另一个项目占着**（RuoYi-Flowable-Plus）。`demo-app` 因此用 **18081**。
 - 本机只放通 Maven Central；`opentelemetry.io` 与 `h2database.com` 连不上。
-  完整的环境坐标见 [`AGENTS.md`](../../AGENTS.md) 的「仓库外的环境坐标」与「三条已知的本机环境坑」。
+  完整的环境坐标见 [`AGENTS.md`](../../AGENTS.md) 的「仓库外的环境坐标」与「已知的本机环境坑」。
 
 ## 五、已在仓库里、不要重读的
 

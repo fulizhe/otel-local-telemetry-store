@@ -27,7 +27,7 @@ java -jar target/otel-local-telemetry-store-demo-0.1.0-SNAPSHOT.jar
 - 一张卡片发真实 HTTP 请求（server span 由 agent 的 Web 仪表化产生，不走我们的代码）
 - 下方「本应用已产生的信号」每 2 秒自动刷新，六个计数
 
-手动验证一条：
+手动验证一条（**用 `curl.exe --noproxy "*"`**，本机设了代理，`Invoke-RestMethod` 会超时）：
 
 ```powershell
 curl.exe --noproxy "*" -X POST "http://localhost:18081/demo/spans?count=3&childPerSpan=2&errors=1&slow=1&slowMs=30"
@@ -35,6 +35,9 @@ curl.exe --noproxy "*" -X POST "http://localhost:18081/demo/spans?count=3&childP
 ```
 
 计数自洽：`spans` 加上 `/demo/logs` 与 `/demo/metrics` 触发的包装 span，等于 `totalSpans` 之和。
+
+**扩展的日志不在 `demo.log` 里** —— agent 把 `java.util.logging` 改到了 stderr，
+所以在 `demo-app/target/demo.err.log`。读它**不要加 `-Encoding UTF8`**（agent 用平台编码）。
 
 ## 端点
 

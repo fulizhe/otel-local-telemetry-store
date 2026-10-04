@@ -181,7 +181,75 @@ pom 里把 `1.66.0` 显式钉住并声明 `provided`（编译直接引用的类�
 **结论**：截断与 head sampling 同类 —— 原理上不可计数，只能靠与外部期望值对照发现。
 据此 [ADR-3](../adr/adr-03-four-ways-data-goes-missing.md) 第 4 种定案为"不可计数"。
 
-## 十、还没验的
+## 十、agent 自带 protobuf，且扩展 ClassLoader 是父优先（Phase 4b 首次端到端实测）
+
+**这一节推翻了第五节与第六节给人的印象**，是本项目目前最重要的一条运行期事实。
+
+### 现象
+
+首次挂 agent 跑端到端（2026-10-04 20:59，agent 2.32.0），存储层起来了
+（`store=ready`），但**载荷编码 100% 失败**，表头行照存：
+
+```
+[otelstore-drain-traces] WARN io.github.fulizhe.otelstore.core.util.ThrottledLogger -
+  [otel-local-telemetry-store] span 载荷编码失败，表头行照存、载荷丢弃：java.lang.ExceptionInInitializerError
+[otelstore-drain-traces] WARN - … java.lang.NoClassDefFoundError:
+  Could not initialize class io.opentelemetry.proto.trace.v1.Span
+```
+
+### 证据（三步，都可复算）
+
+1. **agent jar 里带着未重定位的 protobuf。**
+   agent jar 的条目是 `.classdata`（运行时才解成 class），路径为
+   `inst/com/google/protobuf/*.classdata` —— **不在** `…javaagent/shaded…` 之下。
+   取 `inst/com/google/protobuf/RuntimeVersion.classdata` 直接 javap：
+   `MAJOR = 4`、`MINOR = 35`（即 **protobuf-java 4.35.0**）。
+2. **`ExtensionClassLoader` 是父优先的。**
+   `javap -p io.opentelemetry.javaagent.tooling.ExtensionClassLoader` 显示
+   `extends java.net.URLClassLoader` 且**没有覆写 `loadClass`**
+   → 走 `URLClassLoader` 的标准父优先委托。
+   所以 `com.google.protobuf.*` 命中的是 `AgentClassLoader` 里的 agent 自带版本，
+   **我们 uber jar 里那份 4.36.2 从来没被加载过**。
+3. **gencode 比 runtime 新就抛。**
+   `opentelemetry-proto:1.11.1-alpha` 的 gencode 由 protobuf-java **4.36.2** 生成，
+   生成的 message 类静态块第一件事就是
+   `RuntimeVersion.validateProtobufGencodeVersion(…, 4, 36, 2, "", "")`；
+   protobuf-java 4.x 的规则是「gencode 不得比 runtime 新」→ 抛
+   `UninitializedProvenanceException`，静态块里抛 → 对外表现为
+   `ExceptionInInitializerError`；之后再碰同一个类 → `NoClassDefFoundError: Could not initialize class …`。
+
+**与日志逐字对上**：第一次 `ExceptionInInitializerError`，其后每一次
+`NoClassDefFoundError: Could not initialize class …`。
+
+### 对第五节的修正
+
+第五节那张表说"三者互相隔离"，**对类身份成立、对"谁先被加载"不成立**：
+`ExtensionClassLoader` 的父是 `AgentClassLoader`，凡 agent 自带的同名包，**父优先 ⇒ 父里有的先赢**。
+判断"会不会撞"要问的是**父优先链上有没有同名类**，而不只是"是不是同一个 ClassLoader"。
+应用那份（`AppClassLoader`）是兄弟、互相看不见，那部分第五节没说错。
+
+### 顺带的运行期事实
+
+- agent 自带的 OTLP proto 在 **`io.opentelemetry.proto.collector.{trace,logs,metrics}.v1.internal`**
+  （包名多一段 `internal`），与我们用的 `io.opentelemetry.proto.trace.v1` **不撞** ——
+  但它证明 agent 确实占着这个命名空间。
+- agent 把 `java.util.logging` 改到自己的 logger，**输出到 stderr**：
+  扩展的日志因此在 `demo.err.log` 而不是 `demo.log`，且用平台编码（本机 GBK），
+  加 `-Encoding UTF8` 读会乱码。
+- 存储层开不起来时扩展**不会把应用搞挂**（本次实证）：照常注册、照常计数、
+  关停钩子打出 `退出 … | store off(未开起来)`，应用功能不受影响。
+- `org.h2` 不在 agent 里 → 我们那份 H2 能正常加载，`No suitable driver` 那类问题只与
+  `DriverManager` 的 TCCL 扫描有关（见 ADR-5 与 notes 里那条）。
+
+### 由这条事实导致的决策
+
+见 [ADR-5](../../adr/adr-05-shade-third-party-deps-into-extension-jar.md)：
+**必须 relocation `com.google.protobuf` 与 `io.opentelemetry.proto`**；
+不这么做的替代方案（钉版本 / 降 opentelemetry-proto）都把可用性押在 agent 版本号上。
+
+---
+
+## 十一、还没验的
 
 1. `OTEL_JAVAAGENT_EXTENSIONS` 环境变量是否与系统属性等价（本轮只验了系统属性）。
 2. JDK 8 目标运行时是否一致（探针跑在 JDK 17 上）。

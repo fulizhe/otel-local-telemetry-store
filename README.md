@@ -103,10 +103,18 @@ java -javaagent:opentelemetry-javaagent.jar \
      -jar your-app.jar
 ```
 
-数据落在 `dataDir` 里（`traces.capped` / `logs.capped` 两个环形文件 + 内存里的表头），
-**查它靠 JMX**：`jconsole` 连上本进程 → MBeans → `io.github.fulizhe.otelstore` →
-`LocalStoreSummary`，`summary` / `recentSpans(10)` / `spansOfTrace(<trace_id>)` /
-`spanPayloadHex(<id>)` 直接可点。
+数据落在 `dataDir` 里（`traces.capped` / `logs.capped` 两个环形文件 + 内存里的表头）。
+
+**怎么看它**（三条路，口径同源）：
+
+| 途径 | 适合 |
+| --- | --- |
+| 应用日志里每 60 秒一行 `周期 dataDir=… \| store spans=N logs=N metricPoints=N resources=M` | 快速自查"有没有收到、存了多少" |
+| `jconsole` → MBeans → `io.github.fulizhe.otelstore` → `LocalStoreSummary` | 交互式排查：`summary` / `recentSpans(10)` / `spansOfTrace(<trace_id>)` / `spanPayloadHex(<id>)` |
+| 优雅关停（Ctrl-C）时那行 `退出 …` | 本次进程最终存了多少 |
+
+那行周期汇总是本扩展**唯一默认的周期性日志输出**；不想看就把
+`io.github.fulizhe.otelstore` 这个 logger 的级别调高。
 
 下一阶段的形态是补上 HTTP 读口（含 Prometheus 文本端点），届时再生效的是：
 

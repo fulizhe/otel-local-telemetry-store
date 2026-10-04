@@ -19,7 +19,10 @@ pwsh -NoProfile -File scripts/run-with-agent.ps1   # 构建 + 挂 agent 与扩�
 pwsh -NoProfile -File scripts/run-with-agent.ps1 -Port 18099 -SkipBuild
 ```
 
-- 页面 `http://localhost:18081/`，日志 `demo-app/target/demo.log`
+- 页面 `http://localhost:18081/`
+- `demo-app` 自己的日志 `demo-app/target/demo.log`；
+  **扩展的日志在 `demo-app/target/demo.err.log`**（agent 把 JUL 改到 stderr）——
+  验收信号（`已注册三条采集管线` / `退出 … store spans=N`）在那份里，且读它**不要加 `-Encoding UTF8`**
 - 单独构建：`mvn -f demo-app/pom.xml -DskipTests package`
 - 端点与断言口径见 [`demo-app/README.md`](./demo-app/README.md)
 
