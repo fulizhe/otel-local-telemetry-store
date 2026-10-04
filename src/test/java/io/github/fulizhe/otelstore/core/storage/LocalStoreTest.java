@@ -237,6 +237,31 @@ class LocalStoreTest {
         }
     }
 
+    @Test
+    @DisplayName("换个看不见 H2 的 TCCL 也照样能开库（模拟 agent 启动时的环境）")
+    void opensEvenWhenThreadContextClassLoaderCannotSeeH2(@TempDir final File dataDir) throws Exception {
+        // 这条钉的是 2026-10-04 首次挂 agent 时踩到的坑：DriverManager 在类初始化时
+        // 用 TCCL 扫一次 META-INF/services/java.sql.Driver，而 agent 在 main 线程上
+        // 初始化我们时 TCCL 是 AppClassLoader —— 看不见 shade 进去的 H2，
+        // 于是 "No suitable driver"，存储层开不起来。
+        //
+        // **这个用例证明不了那个 bug 已被修掉**：surefire 的 classloader 上有 H2，
+        // DriverManager 那一次扫描早就注册成功了，换 TCCL 影响不到它。
+        // 它能证明的是"我们不依赖 TCCL"—— 哪天有人改成靠 TCCL 找驱动，这里就会红。
+        // 真正的验证只能是真跑一次 agent（见 notes/2026-10-04-verification-and-pitfalls.md）。
+        final ClassLoader original = Thread.currentThread().getContextClassLoader();
+        final ClassLoader blind = new ClassLoader(null) {
+            // 故意不给 parent：连 bootstrap 之外什么都看不见，等价于 agent 视角
+        };
+        Thread.currentThread().setContextClassLoader(blind);
+        try (LocalStore store = new LocalStore(config(dataDir), "test-tccl")) {
+            store.store(span("under-blind-tccl", "00000000000000000000000000000007", "p".getBytes(UTF8)));
+            assertEquals(1, store.countSpans());
+        } finally {
+            Thread.currentThread().setContextClassLoader(original);
+        }
+    }
+
     private static Long asLong(final Object o) {
         return o instanceof Number ? Long.valueOf(((Number) o).longValue()) : null;
     }

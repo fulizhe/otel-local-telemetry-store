@@ -52,7 +52,7 @@ public final class JmxReadout {
             return true;
         } catch (final Exception e) {
             // JMX 被禁用（JMX remote 没开）或权限不足：读口降级，但扩展其余部分照常
-            ThrottledLogger.warn("jmx-register-failed", "JMX 读口注册失败，读口降级（数据照存）：" + e);
+            ThrottledLogger.warn("jmx-register-failed", "JMX 读口注册失败，读口降级（数据照存）", e);
             return false;
         }
     }

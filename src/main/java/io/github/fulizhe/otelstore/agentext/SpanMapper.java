@@ -142,7 +142,7 @@ final class SpanMapper {
         } catch (final RuntimeException | Error e) {
             // 表头行必须保住：payload 编码失败只降级成"这条没有载荷"
             ThrottledLogger.warn("span-encode-failed",
-                    "span 载荷编码失败，表头行照存、载荷丢弃：" + e);
+                    "span 载荷编码失败，表头行照存、载荷丢弃", e);
             return null;
         }
     }

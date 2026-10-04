@@ -112,8 +112,7 @@
         所以"让用户把这些 jar 放到应用 classpath 上"这条路根本不存在 ——
         shade 是唯一能让它们被加载的方式。
 
-        不做 relocation：应用自己那份 H2 / protobuf 与我们这份分属两个 ClassLoader，本来就各是各的，
-        不存在冲突；而 relocation 会连带破坏 H2 自己的资源与 service 查找，得不偿失。
+        不做 relocation 的只剩 H2 —— 见下面 relocations 段的完整理由。
       -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -127,6 +126,31 @@
             </goals>
             <configuration>
               <createDependencyReducedPom>false</createDependencyReducedPom>
+              <!--
+                relocation 不是洁癖，是实测逼出来的（2026-10-04，详见 docs/adr/adr-05）：
+
+                ExtensionClassLoader 没有覆写 loadClass，走 URLClassLoader 的**父优先**委托。
+                agent jar 里带着**未重定位**的 com.google.protobuf（4.35.0），所以我们 uber jar 里
+                那份 4.36.2 永远不会被加载；而 opentelemetry-proto 的 gencode 是 4.36.2 生成的，
+                它的静态块会校验 "gencode 不得比 runtime 新" —— 于是每次编码都抛
+                ExceptionInInitializerError，载荷全空、表头行照存。
+
+                移到自己包下之后，用哪份 protobuf 就只由我们的 jar 决定，
+                不再取决于 agent 什么时候升级。
+
+                org.h2 刻意**不**移：agent 不含 H2，应用的 H2 在兄弟 ClassLoader 里互相看不见；
+                而 H2 的 trace 系统按字符串类名反射加载 org.h2.trace.*，移了会打断它。
+              -->
+              <relocations>
+                <relocation>
+                  <pattern>com.google.protobuf</pattern>
+                  <shadedPattern>io.github.fulizhe.otelstore.shaded.com.google.protobuf</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>io.opentelemetry.proto</pattern>
+                  <shadedPattern>io.github.fulizhe.otelstore.shaded.io.opentelemetry.proto</shadedPattern>
+                </relocation>
+              </relocations>
               <transformers>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
               </transformers>

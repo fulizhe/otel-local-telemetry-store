@@ -159,6 +159,7 @@ public final class LocalStore implements AutoCloseable {
      */
     LocalStore(final LocalStoreConfig config, final String dbName) throws SQLException, IOException {
         this.config = config;
+        ensureDriver();
         final File dir = new File(config.getDataDir());
         if (!dir.isDirectory() && !dir.mkdirs()) {
             throw new IOException("数据目录建不出来：" + dir.getAbsolutePath());
@@ -171,6 +172,38 @@ public final class LocalStore implements AutoCloseable {
                 config.getCappedTracesBytes(), config.getMaxPayloadBytes());
         this.logRing = new PayloadRing("logs", new File(dir, LOGS_RING_FILE),
                 config.getCappedLogsBytes(), config.getMaxPayloadBytes());
+    }
+
+    /**
+     * <b>显式注册 H2 驱动，不依赖 {@code DriverManager} 的自动发现。</b>
+     *
+     * <p>这不是洁癖，是一个实测出来的坑（2026-10-04 首次挂 agent 时踩到）：
+     * {@code DriverManager} 在<em>类初始化</em>时用一次
+     * {@code ServiceLoader.load(Driver.class)} 扫 {@code META-INF/services/java.sql.Driver}，
+     * 而那次扫描用的是<b>线程上下文 ClassLoader</b>。agent 在 main 线程上初始化我们，
+     * 此时的 TCCL 是应用的 {@code AppClassLoader} —— 它看不见扩展 jar 里的 H2
+     * （R0 笔记第五节：两个 ClassLoader 互相隔离）。扫不到就是扫不到，
+     * 之后无论我们怎么改都救不回来：那次扫描一辈子只做一次。
+     *
+     * <p>症状是 {@code java.sql.SQLException: No suitable driver}，
+     * 而且它<b>只在挂 agent 时出现</b> —— 进程内的单元测试全部照常通过，
+     * 因为 surefire 的 TCCL 与应用 classloader 都能看见 H2。
+     * 这类"测试全绿但生产起不来"的差异，正是必须在真 agent 上验一次端到端的理由。
+     *
+     * <p>{@code org.h2.Driver.load()} 是幂等的（内部 synchronized + 缓存单例），
+     * 所以重复调用无害；它同时解决另一件事 ——
+     * {@code DriverManager} 另有 {@code isDriverAllowed} 校验，
+     * 驱动与调用方必须由<b>同一个</b> ClassLoader 加载才被接受，
+     * 而 shade 进去的 H2 与本类同属 {@code ExtensionClassLoader}，天然满足。
+     */
+    private static void ensureDriver() {
+        try {
+            org.h2.Driver.load();
+        } catch (final RuntimeException | Error e) {
+            // 到这里 H2 本身坏了。抛出去让 openStore 记一条明确的日志，
+            // 好过在 DriverManager 里报一句更含糊的 "No suitable driver"。
+            throw new StoreException("H2 驱动注册失败", e);
+        }
     }
 
     /**
@@ -662,7 +695,7 @@ public final class LocalStore implements AutoCloseable {
             try {
                 conn.close();
             } catch (final SQLException e) {
-                ThrottledLogger.warn("store-close", "关闭 H2 连接失败：" + e);
+                ThrottledLogger.warn("store-close", "关闭 H2 连接失败", e);
             }
         }
     }
@@ -671,13 +704,13 @@ public final class LocalStore implements AutoCloseable {
         try {
             c.close();
         } catch (final IOException e) {
-            ThrottledLogger.warn("ring-close", "关闭环形文件失败：" + e);
+            ThrottledLogger.warn("ring-close", "关闭环形文件失败", e);
         }
     }
 
     private StoreException fail(final String what, final SQLException e) {
         storeErrors++;
-        ThrottledLogger.warn("store-failed-" + what, what + " 落库失败，本条丢弃并计入 sinkErrors：" + e);
+        ThrottledLogger.warn("store-failed-" + what, what + " 落库失败，本条丢弃并计入 sinkErrors", e);
         return new StoreException(what + " 落库失败", e);
     }
 

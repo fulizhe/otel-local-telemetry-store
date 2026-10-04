@@ -75,7 +75,7 @@ final class PayloadRing implements Closeable {
         } catch (final IOException e) {
             rejectedError.incrementAndGet();
             ThrottledLogger.warn("payload-write-failed-" + signal,
-                    signal + " 载荷写环失败，表头行照存、载荷丢弃：" + e);
+                    signal + " 载荷写环失败，表头行照存、载荷丢弃", e);
             return NO_BLOCK;
         }
     }
@@ -96,7 +96,7 @@ final class PayloadRing implements Closeable {
             }
             return out;
         } catch (final IOException e) {
-            ThrottledLogger.warn("payload-read-failed-" + signal, signal + " 载荷读环失败：" + e);
+            ThrottledLogger.warn("payload-read-failed-" + signal, signal + " 载荷读环失败", e);
             return null;
         }
     }

@@ -118,7 +118,7 @@ final class LogMapper {
         } catch (final RuntimeException | Error e) {
             // 同 SpanMapper：编码失败只丢载荷，表头行必须保住
             ThrottledLogger.warn("log-encode-failed",
-                    "日志载荷编码失败，表头行照存、载荷丢弃：" + e);
+                    "日志载荷编码失败，表头行照存、载荷丢弃", e);
             return null;
         }
     }

@@ -177,7 +177,7 @@ public final class LocalStoreSummary implements LocalStoreSummaryMBean {
         try {
             return store.spanPayload(spanId);
         } catch (final Exception e) {
-            ThrottledLogger.warn("readout-payload", "读 span 载荷失败 id=" + spanId + "：" + e);
+            ThrottledLogger.warn("readout-payload", "读 span 载荷失败 id=" + spanId, e);
             return null;
         }
     }
@@ -225,7 +225,7 @@ public final class LocalStoreSummary implements LocalStoreSummaryMBean {
         try {
             return c.get();
         } catch (final Exception e) {
-            ThrottledLogger.warn("readout-count", "计数查询失败：" + e);
+            ThrottledLogger.warn("readout-count", "计数查询失败", e);
             return -1;
         }
     }
