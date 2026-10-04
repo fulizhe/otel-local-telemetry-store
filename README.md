@@ -106,6 +106,7 @@ java -javaagent:opentelemetry-javaagent.jar \
 | `capped.logs.bytes` | 256 MiB | logs 环形文件容量 |
 | `max.payload.bytes` | 1 MiB | 单条载荷上限，超限拒写并计数 |
 | `rows.traces` / `rows.logs` | 200000 | 表头行水位，超出按最旧淘汰 |
+| `queue.capacity` | 4096 | **每条信号**各自的有界队列深度；满了就丢弃并计数，不阻塞 |
 
 ## 代码分层
 

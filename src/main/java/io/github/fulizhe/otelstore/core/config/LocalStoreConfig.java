@@ -29,6 +29,25 @@ public final class LocalStoreConfig {
     public static final int DEFAULT_ROWS_LOGS = 200000;
     public static final boolean DEFAULT_AUTH_ENABLED = true;
 
+    /**
+     * 每条信号各自的有界队列容量。
+     *
+     * <p>三个信号暂用同一个容量 —— 差异化的容量在有实测数据（哪条路径更容易打满）之前不猜。
+     */
+    public static final int DEFAULT_QUEUE_CAPACITY = 4096;
+
+    /** 配置键的<b>后缀</b>列表（不含 {@link #PREFIX} 前缀）。采集侧据此从 {@code ConfigProperties} 取值。 */
+    private static final String[] KEYS = {
+            "host", "port", "auth", "token", "dataDir",
+            "capped.traces.bytes", "capped.logs.bytes", "max.payload.bytes",
+            "rows.traces", "rows.logs", "queue.capacity",
+    };
+
+    /** 供采集侧遍历的配置键后缀。返回副本，调用方改不动内部状态。 */
+    public static String[] knownKeySuffixes() {
+        return KEYS.clone();
+    }
+
     private static final String MASKED_TOKEN = "***";
 
     private final String host;
@@ -41,10 +60,12 @@ public final class LocalStoreConfig {
     private final long maxPayloadBytes;
     private final int rowsTraces;
     private final int rowsLogs;
+    private final int queueCapacity;
 
     private LocalStoreConfig(final String host, final int port, final boolean authEnabled, final String token,
                              final String dataDir, final long cappedTracesBytes, final long cappedLogsBytes,
-                             final long maxPayloadBytes, final int rowsTraces, final int rowsLogs) {
+                             final long maxPayloadBytes, final int rowsTraces, final int rowsLogs,
+                             final int queueCapacity) {
         this.host = host;
         this.port = port;
         this.authEnabled = authEnabled;
@@ -55,6 +76,7 @@ public final class LocalStoreConfig {
         this.maxPayloadBytes = maxPayloadBytes;
         this.rowsTraces = rowsTraces;
         this.rowsLogs = rowsLogs;
+        this.queueCapacity = queueCapacity;
     }
 
     /** 全默认配置。 */
@@ -79,7 +101,8 @@ public final class LocalStoreConfig {
                 readLong(p, "capped.logs.bytes", DEFAULT_CAPPED_LOGS_BYTES),
                 readLong(p, "max.payload.bytes", DEFAULT_MAX_PAYLOAD_BYTES),
                 readInt(p, "rows.traces", DEFAULT_ROWS_TRACES),
-                readInt(p, "rows.logs", DEFAULT_ROWS_LOGS));
+                readInt(p, "rows.logs", DEFAULT_ROWS_LOGS),
+                readInt(p, "queue.capacity", DEFAULT_QUEUE_CAPACITY));
     }
 
     private static String readString(final Map<String, String> p, final String key, final String fallback) {
@@ -161,8 +184,13 @@ public final class LocalStoreConfig {
         return rowsTraces;
     }
 
-    public int getRowsLogs() {
+public int getRowsLogs() {
         return rowsLogs;
+    }
+
+    /** 每条信号的有界队列容量。 */
+    public int getQueueCapacity() {
+        return queueCapacity;
     }
 
     /** 生效配置的快照，供启动日志与 JMX 展示。token 永不出现在这里。 */
@@ -178,6 +206,7 @@ public final class LocalStoreConfig {
         m.put("maxPayloadBytes", Long.valueOf(maxPayloadBytes));
         m.put("rowsTraces", Integer.valueOf(rowsTraces));
         m.put("rowsLogs", Integer.valueOf(rowsLogs));
+        m.put("queueCapacity", Integer.valueOf(queueCapacity));
         return m;
     }
 
