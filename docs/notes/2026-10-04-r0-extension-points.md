@@ -158,6 +158,29 @@ pom 里把 `1.66.0` 显式钉住并声明 `provided`（编译直接引用的类�
 6. **自监控指标按 scope 过滤**，不要存进用户库。
 7. 扩展 jar **只**走 `otel.javaagent.extensions`，且不能与应用 classpath 同路径。
 
+## 九、SpanLimits 截断是完全静默的（A/B 实测）
+
+设 `-Dotel.span.attribute.count.limit=2 -Dotel.span.event.count.limit=1 -Dotel.span.link.count.limit=1`，
+造一个带 6 个 attributes / 3 个 events / 3 个 links 的 span，与不限额对照：
+
+| | 无限制 | 限额 2/1/1 |
+| --- | --- | --- |
+| 到达的 attributes | 6 | **2** |
+| 到达的 events | 3 | **1** |
+| 到达的 links | 3 | **1** |
+
+三种截断都确实发生，但**没有任何可观测信号**：
+
+- **指标**：两组运行采集到的指标名集合完全相同（差集为空）
+- **日志/警告**：输出里搜 `limit` / `truncat` / `discard` / `dropped` 零命中
+- **`SpanData` 标记**：`getAttributes().size()` 就是 2，从数据本身看不出本来有 6 个
+
+唯一残留线索：SDK 内部类 `AttributesMap.totalAddedValues` 仍记着 6。但 `Attributes` **公共接口只有
+`size()` 与 `asMap()`**，读它要依赖 internal API。
+
+**结论**：截断与 head sampling 同类 —— 原理上不可计数，只能靠与外部期望值对照发现。
+据此 [ADR-3](../adr/adr-03-four-ways-data-goes-missing.md) 第 4 种定案为"不可计数"。
+
 ## 十、还没验的
 
 1. `OTEL_JAVAAGENT_EXTENSIONS` 环境变量是否与系统属性等价（本轮只验了系统属性）。
