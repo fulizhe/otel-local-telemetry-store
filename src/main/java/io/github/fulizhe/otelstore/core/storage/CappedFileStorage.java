@@ -257,6 +257,26 @@ class CappedFileStorage implements Closeable {
         return sizeBytes;
     }
 
+    /**
+     * 清零写指针，让环回到"空"。
+     *
+     * <p><b>这是 ADR-4 要求的显式重置入口</b>，不是可选的优化。H2 走内存模式、重启即空，
+     * 而本类的 16B 文件头是跨进程持久的 —— 不显式清零的话，新进程一启动
+     * {@link #getWrapCount()} 与 {@link #getOldestLiveIndex()} 就带着上个进程的数字，
+     * <b>上进程的成绩被算成了本进程的成绩</b>。
+     *
+     * <p>只清指针、不擦数据区：旧块的字节还在原处，但 {@link #readMessage(long)} 的
+     * 窗口判定以 {@code currIndex} 为准，读不到它们。这比重写 256 MiB 便宜得多，
+     * 语义上也完全够用 —— 没人引用的字节不需要真的抹掉。
+     */
+    public void reset() throws IOException {
+        synchronized (lock) {
+            currIndex = 0;
+            writeHeader();
+            force();
+        }
+    }
+
     // ============================ low-level wrap-aware IO
 
     private void writeAt(final long index, final byte[] bytes) throws IOException {

@@ -1,6 +1,7 @@
 package io.github.fulizhe.otelstore.agentext;
 
 import io.github.fulizhe.otelstore.core.config.LocalStoreConfig;
+import io.github.fulizhe.otelstore.readout.jmx.JmxReadout;
 import io.opentelemetry.sdk.autoconfigure.spi.AutoConfigurationCustomizer;
 import io.opentelemetry.sdk.autoconfigure.spi.AutoConfigurationCustomizerProvider;
 import io.opentelemetry.sdk.autoconfigure.spi.ConfigProperties;
@@ -108,12 +109,22 @@ public final class LocalStoreCustomizerProvider implements AutoConfigurationCust
         }
         final LocalStoreConfig config = LocalStoreConfig.from(collected);
         final TapHub created = new TapHub(config);
+        // JMX 是读口的第一条路，也是 Phase 4b 唯一的对账口子：读口没做完之前，
+        // "库里到底存进去没有"只能从这里回答（跨 ClassLoader 的唯一通道，ADR-1 原则 5）。
+        final boolean jmx = JmxReadout.register(config, created.store(), new java.util.function.Supplier<java.util.Map<String, Object>>() {
+            @Override
+            public java.util.Map<String, Object> get() {
+                return created.queuesSnapshot();
+            }
+        });
         LOGGER.info("[otel-local-telemetry-store] 已注册三条采集管线"
                 + " dataDir=" + config.getDataDir()
                 + " queueCapacity=" + config.getQueueCapacity()
                 + " cappedTracesBytes=" + config.getCappedTracesBytes()
                 + " cappedLogsBytes=" + config.getCappedLogsBytes()
-                + " metricIntervalMs=" + METRIC_INTERVAL_MS);
+                + " metricIntervalMs=" + METRIC_INTERVAL_MS
+                + " store=" + (created.store() == null ? "unavailable" : "ready")
+                + " jmxReadout=" + (jmx ? JmxReadout.OBJECT_NAME : "off"));
         return created;
     }
 

@@ -5,14 +5,31 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.fulizhe.otelstore.core.config.LocalStoreConfig;
+import java.io.File;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class LocalStoreCustomizerProviderTest {
+
+    /**
+     * 建一份"数据目录指向临时目录 + 环很小"的配置。
+     *
+     * <p>Phase 4b 之后建 hub 会真的开存储层：默认 {@code dataDir} 是 {@code ./otel-local-telemetry-store}、
+     * 两个环各 256 MiB，测试若用默认值就会在仓库里留下两个大稀疏文件。
+     * <b>存储层一旦开起来，测试就必须自己指定目录</b> —— 这也是"扩展真的在写盘"的副作用。
+     */
+    private static Map<String, String> props(final File dataDir) {
+        final Map<String, String> p = new LinkedHashMap<String, String>();
+        p.put("dataDir", dataDir.getAbsolutePath());
+        p.put("capped.traces.bytes", "1048576");
+        p.put("capped.logs.bytes", "1048576");
+        return p;
+    }
 
     private static void assertFlat(final Object value, final String path) {
         if (value instanceof Map) {
@@ -20,8 +37,9 @@ class LocalStoreCustomizerProviderTest {
                 assertFlat(e.getValue(), path + "." + e.getKey());
             }
         } else {
+            // Double 也在内：环形文件的统计里有压缩率与平均耗时（Phase 4a 时快照里还没有它们）
             assertTrue(value instanceof String || value instanceof Long || value instanceof Integer
-                            || value instanceof Boolean,
+                            || value instanceof Double || value instanceof Boolean,
                     path + " 应是 JDK 原生类型，实际 " + value.getClass().getName());
         }
     }
@@ -37,21 +55,22 @@ class LocalStoreCustomizerProviderTest {
     }
 
     @Test
-    @DisplayName("没有配置时也能建 hub，全部走默认值")
-    void createsHubWithDefaults() {
-        try (TapHub hub = LocalStoreCustomizerProvider.create(
-                (Map<String, String>) null)) {
+    @DisplayName("数据目录与环大小按配置生效（没有配置项时走默认值）")
+    void createsHubWithConfiguredDataDir(@TempDir final File dataDir) {
+        try (TapHub hub = LocalStoreCustomizerProvider.create(props(dataDir))) {
             assertNotNull(hub);
-            assertEquals(LocalStoreConfig.DEFAULT_DATA_DIR, hub.config().getDataDir());
+            assertEquals(dataDir.getAbsolutePath(), hub.config().getDataDir());
+            assertEquals(1048576L, hub.config().getCappedTracesBytes());
             assertEquals(LocalStoreConfig.DEFAULT_QUEUE_CAPACITY, hub.config().getQueueCapacity());
+            assertNotNull(hub.store(), "存储层应当开得起来");
+            assertTrue(new File(dataDir, "traces.capped").isFile(), "环文件应当被建出来");
         }
     }
 
     @Test
     @DisplayName("快照扁平化，且三条信号与合计计数都在")
-    void snapshotIsFlatAndComplete() {
-        try (TapHub hub = LocalStoreCustomizerProvider.create(
-                (Map<String, String>) null)) {
+    void snapshotIsFlatAndComplete(@TempDir final File dataDir) {
+        try (TapHub hub = LocalStoreCustomizerProvider.create(props(dataDir))) {
             final Map<String, Object> s = hub.snapshot();
             for (final String key : new String[]{"dataDir", "queueCapacity", "traces", "logs", "metrics",
                     "droppedTotal", "sinkErrorTotal"}) {
@@ -72,14 +91,13 @@ class LocalStoreCustomizerProviderTest {
 
     @Test
     @DisplayName("queue.capacity 生效，且三条队列都按它建")
-    void queueCapacityIsHonoured() {
-        final Map<String, String> props = new LinkedHashMap<String, String>();
-        props.put("queue.capacity", "64");
-        props.put("dataDir", "/tmp/otelstore-probe");
+    void queueCapacityIsHonoured(@TempDir final File dataDir) {
+        final Map<String, String> p = props(dataDir);
+        p.put("queue.capacity", "64");
 
-        try (TapHub hub = LocalStoreCustomizerProvider.create(props)) {
+        try (TapHub hub = LocalStoreCustomizerProvider.create(p)) {
             assertEquals(64, hub.config().getQueueCapacity());
-            assertEquals("/tmp/otelstore-probe", hub.config().getDataDir());
+            assertEquals(dataDir.getAbsolutePath(), hub.config().getDataDir());
             assertEquals(64, hub.traces().capacity());
             assertEquals(64, hub.logs().capacity());
             assertEquals(64, hub.metrics().capacity());
@@ -88,13 +106,13 @@ class LocalStoreCustomizerProviderTest {
 
     @Test
     @DisplayName("非法配置值回落默认值，不抛异常")
-    void illegalValuesFallBack() {
-        final Map<String, String> props = new LinkedHashMap<String, String>();
-        props.put("queue.capacity", "0");
-        props.put("rows.traces", "-5");
-        props.put("capped.traces.bytes", "not-a-number");
+    void illegalValuesFallBack(@TempDir final File dataDir) {
+        final Map<String, String> p = props(dataDir);
+        p.put("queue.capacity", "0");
+        p.put("rows.traces", "-5");
+        p.put("capped.traces.bytes", "not-a-number");
 
-        try (TapHub hub = LocalStoreCustomizerProvider.create(props)) {
+        try (TapHub hub = LocalStoreCustomizerProvider.create(p)) {
             assertEquals(LocalStoreConfig.DEFAULT_QUEUE_CAPACITY, hub.config().getQueueCapacity());
             assertEquals(LocalStoreConfig.DEFAULT_ROWS_TRACES, hub.config().getRowsTraces());
             assertEquals(LocalStoreConfig.DEFAULT_CAPPED_TRACES_BYTES, hub.config().getCappedTracesBytes());

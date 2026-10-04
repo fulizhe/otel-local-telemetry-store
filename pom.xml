@@ -32,6 +32,16 @@
       见 docs/notes/2026-10-04-r0-extension-points.md
     -->
     <otel.sdk.version>1.66.0</otel.sdk.version>
+
+    <!--
+      下面三个是运行期依赖，会被 shade 进扩展 jar（见 shade 插件那段注释）。
+      版本选择受一条硬约束：它们自己的字节码必须是 52，否则本项目"目标应用可能是 JDK 8"的前提就破了。
+      已核过：h2 2.2.224 = 52（2.3.x 已经是 55）、protobuf-java 4.36.2 = 52。
+    -->
+    <h2.version>2.2.224</h2.version>
+    <otel.proto.version>1.11.1-alpha</otel.proto.version>
+    <protobuf.version>4.36.2</protobuf.version>
+    <shade.plugin.version>3.6.0</shade.plugin.version>
   </properties>
 
   <dependencies>
@@ -48,6 +58,28 @@
       <artifactId>opentelemetry-sdk-extension-autoconfigure-spi</artifactId>
       <version>${otel.sdk.version}</version>
       <scope>provided</scope>
+    </dependency>
+
+    <!--
+      运行期依赖：表头落 H2 内存模式（adr-04），载荷编码成 OTLP protobuf bytes（adr-02）。
+      protobuf-java 显式钉住版本，不靠 opentelemetry-proto 的传递依赖 —— 同上，编译期直接引用的要自己钉。
+    -->
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <version>${h2.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>io.opentelemetry.proto</groupId>
+      <artifactId>opentelemetry-proto</artifactId>
+      <version>${otel.proto.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>com.google.protobuf</groupId>
+      <artifactId>protobuf-java</artifactId>
+      <version>${protobuf.version}</version>
     </dependency>
 
     <dependency>
@@ -70,6 +102,49 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.2.5</version>
+      </plugin>
+
+      <!--
+        打包成 uber jar：H2 / protobuf / opentelemetry-proto 必须**在扩展 jar 里**。
+
+        原因是 ClassLoader 边界（R0 笔记第五节实测）：我们的代码跑在 ExtensionClassLoader 上，
+        它既看不到应用的 AppClassLoader，也拿不到 AgentClassLoader 里的类。
+        所以"让用户把这些 jar 放到应用 classpath 上"这条路根本不存在 ——
+        shade 是唯一能让它们被加载的方式。
+
+        不做 relocation：应用自己那份 H2 / protobuf 与我们这份分属两个 ClassLoader，本来就各是各的，
+        不存在冲突；而 relocation 会连带破坏 H2 自己的资源与 service 查找，得不偿失。
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>${shade.plugin.version}</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+              </transformers>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <!-- 签名文件与模块描述符：留着会让 JDK 报 "Signed but unsigned content" -->
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                    <exclude>module-info.class</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

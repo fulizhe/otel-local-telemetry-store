@@ -27,6 +27,7 @@ public final class LocalStoreConfig {
     public static final long DEFAULT_MAX_PAYLOAD_BYTES = 1024L * 1024L;
     public static final int DEFAULT_ROWS_TRACES = 200000;
     public static final int DEFAULT_ROWS_LOGS = 200000;
+    public static final int DEFAULT_ROWS_METRICS = 200000;
     public static final boolean DEFAULT_AUTH_ENABLED = true;
 
     /**
@@ -40,7 +41,7 @@ public final class LocalStoreConfig {
     private static final String[] KEYS = {
             "host", "port", "auth", "token", "dataDir",
             "capped.traces.bytes", "capped.logs.bytes", "max.payload.bytes",
-            "rows.traces", "rows.logs", "queue.capacity",
+            "rows.traces", "rows.logs", "queue.capacity", "rows.metrics",
     };
 
     /** 供采集侧遍历的配置键后缀。返回副本，调用方改不动内部状态。 */
@@ -61,11 +62,12 @@ public final class LocalStoreConfig {
     private final int rowsTraces;
     private final int rowsLogs;
     private final int queueCapacity;
+    private final int rowsMetrics;
 
     private LocalStoreConfig(final String host, final int port, final boolean authEnabled, final String token,
                              final String dataDir, final long cappedTracesBytes, final long cappedLogsBytes,
                              final long maxPayloadBytes, final int rowsTraces, final int rowsLogs,
-                             final int queueCapacity) {
+                             final int queueCapacity, final int rowsMetrics) {
         this.host = host;
         this.port = port;
         this.authEnabled = authEnabled;
@@ -77,6 +79,7 @@ public final class LocalStoreConfig {
         this.rowsTraces = rowsTraces;
         this.rowsLogs = rowsLogs;
         this.queueCapacity = queueCapacity;
+        this.rowsMetrics = rowsMetrics;
     }
 
     /** 全默认配置。 */
@@ -102,7 +105,8 @@ public final class LocalStoreConfig {
                 readLong(p, "max.payload.bytes", DEFAULT_MAX_PAYLOAD_BYTES),
                 readInt(p, "rows.traces", DEFAULT_ROWS_TRACES),
                 readInt(p, "rows.logs", DEFAULT_ROWS_LOGS),
-                readInt(p, "queue.capacity", DEFAULT_QUEUE_CAPACITY));
+                readInt(p, "queue.capacity", DEFAULT_QUEUE_CAPACITY),
+                readInt(p, "rows.metrics", DEFAULT_ROWS_METRICS));
     }
 
     private static String readString(final Map<String, String> p, final String key, final String fallback) {
@@ -188,6 +192,16 @@ public int getRowsLogs() {
         return rowsLogs;
     }
 
+    /**
+     * {@code metric_point} 的行数水位。
+     *
+     * <p>metrics 不走环形文件（ADR-2），所以它的"有界"只能靠行数 —— 没有这个旋钮，
+     * 指标点会随进程存活无限增长，与 ADR-1 的有界预算直接冲突。
+     */
+    public int getRowsMetrics() {
+        return rowsMetrics;
+    }
+
     /** 每条信号的有界队列容量。 */
     public int getQueueCapacity() {
         return queueCapacity;
@@ -206,6 +220,7 @@ public int getRowsLogs() {
         m.put("maxPayloadBytes", Long.valueOf(maxPayloadBytes));
         m.put("rowsTraces", Integer.valueOf(rowsTraces));
         m.put("rowsLogs", Integer.valueOf(rowsLogs));
+        m.put("rowsMetrics", Integer.valueOf(rowsMetrics));
         m.put("queueCapacity", Integer.valueOf(queueCapacity));
         return m;
     }

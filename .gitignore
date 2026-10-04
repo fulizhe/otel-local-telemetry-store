@@ -5,6 +5,7 @@ target/
 # ---- 运行期产物（本项目在应用进程内写盘，不能进版本库） ----
 # 堆外环形载荷文件：traces / logs 各一个
 *.capped.db
+*.capped
 # 读口对外发现用：实际监听端口与访问 token
 *.port
 *.token
