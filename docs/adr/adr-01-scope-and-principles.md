@@ -9,7 +9,7 @@
 **做**
 
 - traces / logs / metrics 三个信号，单 JVM、单体应用优先
-- 硬预算：traces 与 logs 各一个堆外定长环形文件（`capped.traces.bytes` / `capped.logs.bytes`），H2 侧各有一张表头表 + 行数水位（`rows.traces` / `rows.logs`）；metrics 走时间序列 rollup，不进环形文件
+- 硬预算：traces 与 logs 各一个堆外定长环形文件（`capped.traces.bytes` / `capped.logs.bytes`），H2 侧各有一张表头表 + 行数水位（`rows.traces` / `rows.logs`）；metrics 走时间序列形态，不进环形文件，但 H2 侧**同样有行数水位**（`rows.metrics`）
 - 读口：JMX（跨 ClassLoader 的主通道）+ HTTP（含 Prometheus 文本端点）；默认开启、默认绑 `0.0.0.0`、token 鉴权、只注册 GET/HEAD
 - 端口先试配置值，`BindException` 则退到随机端口并报出实际值，**绝不让端口冲突变成启动失败**
 
@@ -35,6 +35,7 @@
 - **用 `*ExporterCustomizer` 装饰 agent 配好的 exporter 作为主路径**：拒绝。那是装饰器不是替换器（SPI 里没有 `setXxxExporter`），要"数据留本地"只能丢弃传入的 delegate —— 语义别扭，且高度依赖 autoconfigure 是否已配好 exporter（用户配 `otel.traces.exporter=none` 时就没有可装饰对象）。改用 Provider builder 后，注册我们自己的组件与用户是否配了 exporter 无关。
 - **保留 SW 侧的"内存热层 + 双源对账"**：拒绝。对账存在的原因是"我魔改了上报通路，怕改坏数据"；走官方扩展点没有这个风险。反过来，丢弃与积压成为唯一风险，所以计数换成 drop / backlog / 环覆盖。
 - **一个共享环形文件按百分比给三信号分配额**：拒绝。环写满后槽位不再携带"自己属于哪个信号"的信息，按信号核算用量做不到。改为 traces / logs 各一个环文件 + H2 侧各自行数水位 —— 配额变成三个独立旋钮，语义更直白，副作用是日志洪峰不会挤掉 trace。
+- **metrics 不配行数水位**（原措辞只给 traces / logs 留了旋钮）：拒绝。不进环形文件不等于不要上界 —— 指标行同样写在 H2 表里，没有水位就是无界增长，直接违反本文的硬预算条款。metrics 行比 span 行轻（无 payload），但**在有实测数据之前不猜更小的值**，见 Consequences。
 - **给应用留一个可调的 toolkit 桩（对齐 SkyWalking 的宿主工具类）**：拒绝。前提不成立 —— extension-api 里没有 `InstrumentationAccess`，拿不到 `Instrumentation` 就无法 `appendToSystemClassLoaderSearch`；JDK 17 上反射 `ClassLoader.appendToClassPathForInstrumentation` 需要 `--add-opens`。改用 JMX：平台级，不受 ClassLoader 边界影响。
 - **把 agent 自监控指标一并存进本地库**：拒绝。用户查自己的 trace 时看到一半是 `jvm.*` 与 `otlp.exporter.*`，等于把 SDK 内部状态混进业务数据。这些指标走 JMX 面板，不入库。
 
@@ -42,8 +43,9 @@
 
 - Phase 4 的形状被这一条定死：`agentext` 里一个 `AutoConfigurationCustomizerProvider` 实现，在 `customize()` 里注册三个 lambda；每条路径的入队与落盘分离，采集线程只做一次 `offer`。
 - **logs 的业务线程风险比预想的小，但没消失**：SDK 1.66 有 `BatchLogRecordProcessor`（autoconfigure 默认就装），所以 `onEmit` 只是入队。但我们自己的入队**仍不能阻塞** —— 队列满就丢并计数，不能 inline 压缩或写文件。
-- 有界预算从"一个总数"变成"每信号一个独立上限"。好处是可控、可解释；代价是要用户分别调三个旋钮，文档必须写清总占用怎么估算。
+- 有界预算从"一个总数"变成"**每信号一个独立上限**"。好处是可控、可解释；代价是要用户分别调 —— traces 与 logs 各有两个旋钮（`capped.*.bytes` 管载荷、`rows.*` 管表头），metrics 一个（`rows.metrics`），文档必须写清总占用怎么估算。
+- `rows.metrics` 默认与 `rows.traces` / `rows.logs` 同档（200000）。**这是"未实测前不猜"的占位值，不是结论**：指标行确实更轻，等有了真实负载下"每行多大、增长多快"的数字再改 —— 与 `queue.capacity` 三个信号暂用同一容量是同一条理由。
 - 读口默认对内网开放。即便有 token，这也**扩大了攻击面**：trace 与 log 的载荷里装着 SQL 语句、HTTP header、请求体、日志原文。因此 token 必须每进程随机，且绝不出现在任何日志 / 快照 / 异常消息里（`LocalStoreConfig.describe()` 已按此实现）。
 - demo-app 不再像 SW 侧那样托管读口 —— 读口在扩展内部，与应用隔着三个 ClassLoader。它退化为"造信号 + 给出可断言的期望值"的靶子。
 - R0 笔记里被推翻的两条早期判断（"logs 只有同步钩子"、"toolkit 桩可做"）已改正，本 ADR 不再依赖它们。
-- 尚未决定、留给后续 ADR 的：三张表的具体列与索引、payload 存编码后的 OTLP bytes 还是解码后的结构、四种"数据少了"的口径定义。
+- ~~尚未决定、留给后续 ADR 的：三张表的具体列与索引、payload 存编码后的 OTLP bytes 还是解码后的结构、四种"数据少了"的口径定义。~~ **这三项都已定**：表结构与 payload 形态见 [adr-02](adr-02-data-model.md)，"数据少了"的口径见 [adr-03](adr-03-four-ways-data-goes-missing.md)。仍然悬着的是 metrics 的分钟/小时 rollup 表，以及多实例共用 `dataDir`（见 [index](index.md) 的「悬着的事」）。

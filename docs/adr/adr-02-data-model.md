@@ -29,6 +29,17 @@ payload 的唯一用途是**详情页读回单条记录**。查询全部走 H2 �
 
 `metric_point` 的表头列：`id`、`metric_name`、`data_type`（Gauge / Sum / Histogram / Summary 之一）、`ts`、`resource_id`、`scope_name`、`scope_version`、`attr_key`（属性组合的哈希）、以及按类型填充的 `value` / `count` / `sum` / `detail`（Histogram 的桶与 Summary 的分位放这里，详情页才读）。
 
+> **实现时的两处偏离（Phase 4b）**，都不改语义，只改拼写与索引：
+>
+> 1. 三个标量列实际叫 `metric_value` / `metric_count` / `metric_sum`。`VALUE` 是 H2 2.x 的保留字，
+>    想用就得处处加引号，而加了引号标识符就变成大小写敏感 —— 收益为零、坑一堆。
+> 2. `metric_point` 另建了 `(metric_name, ts)` 与 `(attr_key)` 两个索引。上面的"只建两个索引"
+>    说的是 `span` 与 `log_record`；metrics 没有 payload，时间序就是唯一的查法，
+>    不建索引等于每次查指标都顺序扫。
+>
+> 另外 `metric_point` 多了 `unit` 与 `description` 两列：Prometheus 端点要它们，
+> 而它们是**指标自身的属性**（写死在仪表定义里），放表头比放 payload 更直接。
+
 ## 索引：只建两个
 
 `span`：`PRIMARY KEY(id)` + `idx_trace(trace_id)`。**不给 `start_time` 建索引。**
@@ -44,6 +55,17 @@ payload 的唯一用途是**详情页读回单条记录**。查询全部走 H2 �
 1. **`payload_id` 可为 NULL，而 0 恰好是合法的首个逻辑偏移。** 读它必须走 `wasNull()`，否则"没有载荷"会被误报成"指向环里最老那块"。这条是从 SkyWalking 侧原样继承的缺陷模式，本项目第一次实现就要避开。
 2. **payload 一律走环形文件，H2 不内联。** 一旦允许"小载荷内联"，"哪些内联了"就成了一条新的口径，而口径 proliferation 是这类存储最容易出的错。
 3. **时间用纳秒 epoch（`BIGINT`）。** OTLP 原生就是 epoch nanos，不做单位换算 —— 换算会在读回时引入一类无法从数据本身发现的偏差。
+
+4. **（Phase 4b 补）载荷写不进去时，表头行仍然要保住。** 超 `max.payload.bytes`、环写不动、
+   proto 编码抛异常 —— 这三种都只丢载荷、把 `payload_id` 记 NULL。
+   反过来（表头丢了只留载荷）会造出"这条记录存在但查不到"的局面，那比缺载荷难查得多：
+   缺载荷至少还能在列表页看见那一行。`LocalStoreTest` 里
+   「payload 为 null 时表头行照存，且不会被误读成环里第 0 块」这条测试就是钉这一条。
+
+5. **（Phase 4b 补）Resource 白名单要挡两次：表头与载荷。** 载荷"只是给人看的详情"，
+   但它落在磁盘上、活得比进程久。只过滤表头等于把 `process.command_line` 原样写进环形文件。
+   过滤因此放在翻译期（`agentext` 的 `ResourceMapper`）而不是存储层 ——
+   放存储层就要写两遍，漏一遍就前功尽弃。
 
 ## Resource 抽字典表，Scope 不抽
 

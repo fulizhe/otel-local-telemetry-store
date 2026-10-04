@@ -5,7 +5,9 @@
 **otel-local-telemetry-store** —— 把 OpenTelemetry 的 traces / logs / metrics 留在应用自己的进程内。
 不发给任何远端，不需要第二套 agent，存储有界、降级可控。
 
-当前处于 **Phase 0（骨架）**：能编译、能跑测试，功能尚未落地。第一个可运行形态见 README 的"目标用法"。
+当前处于 **Phase 4b 已落地、端到端未验收**：存储层（H2 内存表头 + 环形文件载荷）与 JMX 读口都已接上，
+三条采集管线能把数据写进库并读回。**HTTP 读口还没做，端到端验收还没跑过。**
+第一个可运行形态见 README 的"目标用法"。
 
 ## 演示应用与靶子
 
@@ -21,12 +23,17 @@ pwsh -NoProfile -File scripts/run-with-agent.ps1 -Port 18099 -SkipBuild
 - 单独构建：`mvn -f demo-app/pom.xml -DskipTests package`
 - 端点与断言口径见 [`demo-app/README.md`](./demo-app/README.md)
 
-**两条已知的本机环境坑**（写脚本/文档时别忘）：
+**四条已知的本机环境坑**（写脚本/文档时别忘）：
 
 1. 本机设了 `HTTP_PROXY`，而 **PowerShell 7 的 `Invoke-RestMethod` / `Invoke-WebRequest`
    不认 `NO_PROXY`** —— 访问 localhost 会超时。用 `curl.exe --noproxy "*"` 或加 `-NoProxy`。
 2. **`-Dotel.javaagent.extensions=` 指向不存在的路径时，agent 静默忽略、零告警。**
    `scripts/run-with-agent.ps1` 会在起之前校验产物，堵掉这个坑。
+3. **外网只放通 Maven Central。** `opentelemetry.io`、`h2database.com` 是连接失败（不是 404），
+   `developer.android.com` 与 `raw.githubusercontent.com` 返回 404（路径未试对）。
+   查依赖版本/版本对齐就在 Maven Central 上查；查文档别在官网耗时间。
+4. **端口 18080 被本机另一个项目占着**（RuoYi-Flowable-Plus）。`demo-app` 因此用 **18081** ——
+   别先去试 18080。
 
 ## 构建与验证
 
@@ -44,10 +51,27 @@ javap -verbose -cp target/classes io.github.fulizhe.otelstore.core.config.LocalS
 **CI 改完先本地过 actionlint**，不要直接推：
 
 ```powershell
-D:\apps\actionlint\actionlint.exe .github/workflows/*.yml
+D:\apps\actionlint\actionlint.exe (Get-ChildItem .github\workflows\*.yml).FullName   # 预期：无输出
+（本机是 Windows：actionlint 不吃 glob 也不吃目录，必须这样把文件逐个喂给它。直接给 `.github/workflows/*.yml` 会报 `could not read`。）
 ```
 
 CI 的字节码断言用的就是上面那条 `major version: 52`。
+
+### 仓库外的环境坐标（不在 git 里，换机器要重找）
+
+| 东西 | 位置 |
+| --- | --- |
+| agent jar | `D:\apps\opentelemetry-javaagent-2.32.0.jar`（26 MB，2.32.0） |
+| actionlint | `D:\apps\actionlint\actionlint.exe`（1.7.12） |
+| 一次性探针目录 | `C:\Users\lqzkc\AppData\Local\Temp\opencode\otel-probe` |
+| `gh` | **未安装** —— GitHub 远程是手工建的 |
+
+`JAVA_HOME`（JDK 17）的用法已列在上面，不重复。**探针目录可复用可销毁**：里面有一个
+SPI provider 骨架，再要验 agent 扩展点的任何事实之前先去翻它，别从头搭一遍。
+
+**shade 进去的三方依赖也必须是 52**（H2 / protobuf / opentelemetry-proto，见
+[ADR-5](docs/adr/adr-05-shade-third-party-deps-into-extension-jar.md)）。shade 不重编译依赖 ——
+升级它们时要自己核 class 版本，H2 2.3.x 已经是 55（Java 11）。
 
 ## 代码分层与依赖方向
 

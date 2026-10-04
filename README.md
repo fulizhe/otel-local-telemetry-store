@@ -105,7 +105,7 @@ java -javaagent:opentelemetry-javaagent.jar \
 | `capped.traces.bytes` | 256 MiB | traces 环形文件容量 |
 | `capped.logs.bytes` | 256 MiB | logs 环形文件容量 |
 | `max.payload.bytes` | 1 MiB | 单条载荷上限，超限拒写并计数 |
-| `rows.traces` / `rows.logs` | 200000 | 表头行水位，超出按最旧淘汰 |
+| `rows.traces` / `rows.logs` / `rows.metrics` | 200000 | 表头行水位，超出按最旧淘汰。三个信号各自独立；metrics 行更轻，但未实测前不猜更小的值 |
 | `queue.capacity` | 4096 | **每条信号**各自的有界队列深度；满了就丢弃并计数，不阻塞 |
 
 ## 代码分层
@@ -115,6 +115,33 @@ io.github.fulizhe.otelstore
 ├── core      与 OTel 无关：配置、存储、统计
 ├── agentext  OTel 接入：SPI provider 与三条信号管线
 └── readout   读口：JMX、HTTP、Prometheus 渲染
+```
+
+`core` 不许 import 任何 `io.opentelemetry.*` —— 存储层与采集端解耦，是它能独立复用的唯一保证。
+
+```
+core/config/LocalStoreConfig              otel.localstore.* ；解析永不失败
+core/collection/RecordQueue               有界队列 + drainer 线程 + 三类分开计数
+core/model/{KeyValue,ResourceDescriptor,
+            SpanRecord,LogRecordEntry,MetricPointEntry}
+                                           core 的入参类型：JDK 原生，不 import OTel
+core/storage/CappedFileStorage(+Stats)    堆外环形载荷文件（从 SW 侧搬来，带 reset）
+core/storage/PayloadRing                  环 + 单块上限 + 启动重置；-1 表示"没写进去"
+core/storage/LocalStore                   H2 内存库 + 四张表 + 行数水位 FIFO 淘汰
+core/storage/ResourceDictionary           Resource 按规范化哈希去重
+core/storage/CanonicalAttributes          规范化文本 + SHA-256（字典与 attr_key 共用）
+core/util/ThrottledLogger                 限速日志（计数永远做，只挡"写几个字"）
+
+agentext/LocalStoreCustomizerProvider     SPI 入口；三个 *ProviderCustomizer
+agentext/{SpanTap,LogTap,MetricTap}       只做一次转换 + 一次 offer
+agentext/TapHub                           三队列 + 真 sink（翻译 + 落库）+ 退出汇总
+agentext/{OtelAttributes,ResourceMapper,
+          SpanMapper,LogMapper,MetricMapper}
+                                           OTel → core 入参 + OTLP protobuf 载荷
+
+readout/TextRenderer                      快照 → 缩进文本
+readout/jmx/{LocalStoreSummaryMBean,LocalStoreSummary,JmxReadout}
+                                           JMX 读口：属性只有 String / int
 ```
 
 ## 文档
@@ -129,6 +156,7 @@ io.github.fulizhe.otelstore
 - [ADR-2 payload 存编码后的 OTLP bytes，Resource 抽字典表](docs/adr/adr-02-data-model.md)
 - [ADR-3 "数据少了"有五种形态，各计各的](docs/adr/adr-03-four-ways-data-goes-missing.md)
 - [ADR-4 H2 内存模式、存储随进程存活](docs/adr/adr-04-h2-in-memory-and-reset-on-startup.md)
+- [ADR-5 三方依赖 shade 进扩展 jar](docs/adr/adr-05-shade-third-party-deps-into-extension-jar.md)
 
 **存储的性质：随进程存活，重启即清空**（[ADR-4](docs/adr/adr-04-h2-in-memory-and-reset-on-startup.md)）。
 内存模式不落盘、不碰文件锁，代价是重启后看不到之前的 trace 与指标 —— 这是声明的性质，不是缺陷。

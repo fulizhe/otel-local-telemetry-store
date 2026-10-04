@@ -9,9 +9,16 @@
 | [adr-02](adr-02-data-model.md) | payload 存编码后的 OTLP bytes（自写 mapper）；表头行只留可查询字段；Resource 抽字典表 | 已定，一条推断待实测 |
 | [adr-03](adr-03-four-ways-data-goes-missing.md) | "数据少了"有五种形态，各计各的不求和 | 已定 |
 | [adr-04](adr-04-h2-in-memory-and-reset-on-startup.md) | H2 用内存模式、存储随进程存活，启动时显式重置环形文件 | 已定 |
+| [adr-05](adr-05-shade-third-party-deps-into-extension-jar.md) | 三方依赖（H2 / protobuf / opentelemetry-proto）shade 进扩展 jar，不 relocation | 已定（Phase 4b） |
 
 ## 悬着的事
 
 - **`start_time` 不建索引**（adr-02）—— 从 SkyWalking 侧继承的是**推断**，本项目表结构不同，需实测。
+  Phase 4b 已落地，**现在就可以实测**；若结论相反就改 ADR-2。
 - **metrics 的分钟/小时 rollup** —— 本版只定义"时间序列形态 + 行数水位"，汇总表留到后面。
 - **多实例共用 `dataDir`** —— 明确不支持（adr-04 的前提）。见到有人要支持，先写 ADR。
+- **ADR-3 第 4 种（SDK 层截断）真的完全静默吗** —— ADR-3 的结论是"`SpanData` 上没有任何标记"，
+  但当时验的是 `getAttributes().size()`。`SpanData.getTotalAttributeCount()` 是**公开 API**，
+  Phase 4b 的 mapper 顺手把它写进了 `attr_count` 列与 OTLP 的 `dropped_attributes_count`。
+  **尚未实测**：若限额下 `total - size()` 恒大于 0，第 4 种就变成可计数的，ADR-3 要改。
+  下一步：用一次性探针在限额下验一次（探针目录见 [`AGENTS.md`](../../AGENTS.md) 的「仓库外的环境坐标」）。
