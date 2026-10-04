@@ -88,6 +88,7 @@ io.github.fulizhe.otelstore
 ## 文档
 
 - [`AGENTS.md`](./AGENTS.md) —— 构建、验证与代码约定
-- [`docs/notes/`](./docs/notes/) —— 调研笔记（尚未产出内容）
+- [`docs/adr/`](./docs/adr/) —— 架构决策记录
+- [`docs/notes/`](./docs/notes/) —— 调研笔记
 
-架构决策（ADR）从 Phase 2 起落在 `docs/adr/`。
+已落盘的决策：[ADR-1 三个信号就地落库、只读暴露](docs/adr/adr-01-scope-and-principles.md)。
