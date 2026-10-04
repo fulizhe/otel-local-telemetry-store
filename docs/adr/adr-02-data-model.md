@@ -86,3 +86,6 @@ payload 的唯一用途是**详情页读回单条记录**。查询全部走 H2 �
 - `resource_dict` 是 SW 侧没有的新东西，也是本项目唯一新增的表。它让 span 行的宽度从"18 个属性"降到"一个外键"，量级差别见 R0 笔记第八节。
 - **metrics 的 rollup 这一版不做**：本 ADR 只定义"时间序列形态 + 行数水位"，分钟/小时 rollup 表留到后面。ADR-1 里说的"rollup"指的是"不是事件流"这个形态判断，不是已经建了两级汇总表。
 - 三个 mapper 的一致性要靠测试兜住：同一批输入下，三条路径的 `resource_id` 必须指向字典表里**同一行**。这条断言比单测任何一个 mapper 都重要。
+- **上游佐证**：官方 `opentelemetry-disk-buffering` 落的就是 OTLP protobuf bytes
+  （依赖 `wire-runtime` + `exporter-otlp-common`），与本决策一致。
+  实测数据见 [`notes/2026-10-04-portability-and-android.md`](../notes/2026-10-04-portability-and-android.md)。
