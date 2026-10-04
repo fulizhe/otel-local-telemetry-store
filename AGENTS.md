@@ -1,0 +1,65 @@
+# AGENTS.md
+
+## 项目与当前阶段
+
+**otel-local-telemetry-store** —— 把 OpenTelemetry 的 traces / logs / metrics 留在应用自己的进程内。
+不发给任何远端，不需要第二套 agent，存储有界、降级可控。
+
+当前处于 **Phase 0（骨架）**：能编译、能跑测试，功能尚未落地。第一个可运行形态见 README 的"目标用法"。
+
+## 构建与验证
+
+构建用 **JDK 17**，产出**字节码 8**（`maven.compiler.release=8`）——目标应用可能是 JDK 8。
+
+```powershell
+$env:JAVA_HOME="D:\apps\java\jdk-17.0.8"; $env:Path="$env:JAVA_HOME\bin;$env:Path"
+
+mvn -o -q -DskipTests compile     # 编译
+mvn -o test                       # 测试
+javap -verbose -cp target/classes io.github.fulizhe.otelstore.core.config.LocalStoreConfig |
+  Select-String "major version"   # 必须是 52
+```
+
+**CI 改完先本地过 actionlint**，不要直接推：
+
+```powershell
+D:\apps\actionlint\actionlint.exe .github/workflows/*.yml
+```
+
+CI 的字节码断言用的就是上面那条 `major version: 52`。
+
+## 代码分层与依赖方向
+
+```
+io.github.fulizhe.otelstore
+├── core      与 OTel 无关：配置、存储、统计
+├── agentext  OTel 接入：SPI provider 与三条信号管线
+└── readout   读口：JMX、HTTP、Prometheus 渲染
+```
+
+三条硬规则，评审时按它们查：
+
+1. **`core` 不许 import 任何 `io.opentelemetry.*`。** 存储层与采集端解耦，是它将来能独立复用的唯一保证。
+2. **`agentext` 不许直接操作存储实现**，只负责把 OTel 的数据模型翻译成 `core` 的入参。
+3. **`readout` 只读。** 任何"顺手加个修改接口"的想法要先写 ADR。
+
+## 运行期约定
+
+- **配置命名空间 `otel.localstore.*`**，避开 OTel 自身的 `otel.traces.*` / `otel.metrics.*` / `otel.logs.*`。
+- **配置永不失败**：非法取值回落默认值，不抛异常。本项目跑在客户进程里，一个笔误不该让应用起不来。
+- **端口冲突不阻塞启动**：退到随机端口并报出实际值。
+- **异常不就地外抛**：存储与读口内部捕获、计数、限速日志。
+- **区分"丢了"与"过期"**：环形文件写满是预期行为不是故障，两种计数必须分开。
+
+## 读口的安全姿态
+
+- 默认开启、默认绑定 `0.0.0.0`（可远程访问）、**结构性只读**（只注册 GET/HEAD，不提供 raw SQL）。
+- 默认要求访问 token：进程启动时随机生成，写入 `*.token` 文件与启动日志。
+  **token 绝不能出现在任何日志、快照或异常消息里** —— 配 `describe()` 时注意。
+- 在客户应用里开端口是安全决策，不是顺手的事。改绑定地址或鉴权策略要写进 ADR。
+
+## 验证节奏
+
+- 短命令自己跑；长验证给命令让用户跑，不要替用户干等。
+- 失败即给结论与下一步，不用"我继续"过渡。
+- 改了 workflow 记得本地 actionlint —— GitHub 对 workflow 另有一套契约，YAML 能解析不等于它会认。

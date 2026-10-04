@@ -1,0 +1,44 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# 刻意不加 paths 白名单 —— 那是"只有这些路径变了才跑"，会让"只改 workflow 本身"永远不触发验证。
+# 项目还小，每次 push 都跑一遍最省心。
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build-and-test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Compile
+        run: mvn -B -DskipTests compile
+
+      - name: Assert bytecode target is 8
+        run: |
+          cls=$(find target/classes -name '*.class' -print -quit \
+                | sed -e 's#target/classes/##' -e 's#\.class$##' -e 's#/#.#g')
+          if [ -z "$cls" ]; then
+            echo "no compiled class found under target/classes"; exit 1
+          fi
+          javap -verbose -cp target/classes "$cls" | grep -q 'major version: 52' \
+            || { echo "expected bytecode 8 (major version 52), got:"; \
+                 javap -verbose -cp target/classes "$cls" | grep 'major version'; exit 1; }
+          echo "bytecode target OK: $cls"
+
+      - name: Test
+        run: mvn -B test
