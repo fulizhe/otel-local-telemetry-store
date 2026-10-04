@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>2.7.18</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>io.github.fulizhe</groupId>
+  <artifactId>otel-local-telemetry-store-demo</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <name>otel-local-telemetry-store-demo</name>
+  <description>造三个信号的演示应用与端到端验证靶子</description>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!--
+      刻意锁 Java 8：本仓库的字节码基线是 8，demo-app 与扩展跑在同一个 JVM 上，
+      用 8 才能顺带验证"扩展在 JDK 8 应用里可用"这句话不是空话。
+      Spring Boot 2.7.18 是 2.x 末代，支持 Java 8。
+    -->
+    <java.version>8</java.version>
+    <!-- 必须与 agent 内嵌的 SDK 版本一致，否则应用侧 API 与 agent 侧 SDK 不同源 -->
+    <otel.api.version>1.66.0</otel.api.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+
+    <!--
+      应用侧自己发信号需要 OTel API。agent 不会白给这三个 jar
+      （缺 opentelemetry-common 会报 NoClassDefFoundError，见 docs/notes/2026-10-04-r0-extension-points.md）。
+    -->
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-api</artifactId>
+      <version>${otel.api.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

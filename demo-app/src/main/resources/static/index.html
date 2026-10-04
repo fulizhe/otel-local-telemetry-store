@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>otel-local-telemetry-store · 演示控制台</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --line: #2a2f3a;
+    --fg: #e6e9ef;
+    --dim: #9aa3b2;
+    --accent: #6ea8fe;
+    --ok: #57d38c;
+    --warn: #e8b64c;
+    --err: #f0736a;
+    --pending: #7d8595;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    padding: 22px 28px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  h1 { margin: 0 0 6px; font-size: 18px; letter-spacing: .2px; }
+  .sub { color: var(--dim); font-size: 13px; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 24px 28px 64px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }
+  .card h2 { margin: 0 0 4px; font-size: 14px; }
+  .card p { margin: 0 0 14px; color: var(--dim); font-size: 12.5px; }
+  label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; }
+  input, select {
+    width: 100%; padding: 7px 9px; margin-bottom: 10px;
+    background: var(--panel-2); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 13px;
+  }
+  button {
+    width: 100%; padding: 9px 12px; cursor: pointer;
+    background: var(--accent); color: #08101f; border: 0; border-radius: 6px;
+    font: inherit; font-weight: 600;
+  }
+  button:hover { filter: brightness(1.08); }
+  button.ghost { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); font-weight: 400; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 500; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .note {
+    border-left: 3px solid var(--pending); background: var(--panel-2);
+    padding: 12px 14px; border-radius: 0 8px 8px 0; font-size: 13px; color: var(--dim);
+  }
+  .note b { color: var(--fg); }
+  .note.pending { border-left-color: var(--warn); }
+  .toast {
+    position: fixed; right: 20px; bottom: 20px; max-width: 380px;
+    background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--ok);
+    padding: 12px 14px; border-radius: 8px; font-size: 12.5px;
+    opacity: 0; transform: translateY(8px); transition: .2s; pointer-events: none;
+  }
+  .toast.on { opacity: 1; transform: none; }
+  .toast.err { border-left-color: var(--err); }
+  .pill {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: 11px; border: 1px solid var(--line); color: var(--dim);
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>otel-local-telemetry-store · 演示控制台</h1>
+  <div class="sub">
+    本页只负责<b>造信号</b>与显示<b>本应用造了多少</b>。
+    存储与读口在 agent 扩展里，<span class="pill">Phase 5 才可见</span>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="grid">
+
+    <div class="card">
+      <h2>traces</h2>
+      <p>每条父 span 挂若干子 span，按比例标 error 与 slow。</p>
+      <label>父 span 数 count（≤500）</label><input id="s-count" value="3">
+      <div class="row">
+        <div><label>子 span / 条</label><input id="s-child" value="1"></div>
+        <div><label>error 数</label><input id="s-err" value="1"></div>
+      </div>
+      <div class="row">
+        <div><label>slow 数</label><input id="s-slow" value="1"></div>
+        <div><label>slow 毫秒</label><input id="s-slowms" value="20"></div>
+      </div>
+      <button onclick="send('spans')">造 spans</button>
+    </div>
+
+    <div class="card">
+      <h2>logs</h2>
+      <p>日志在 current span 内部打出，因此会带上 traceId / spanId。</p>
+      <label>行数 count（≤2000）</label><input id="l-count" value="5">
+      <label>级别</label>
+      <select id="l-level"><option>INFO</option><option>WARN</option><option>ERROR</option></select>
+      <button onclick="send('logs')">造日志</button>
+    </div>
+
+    <div class="card">
+      <h2>metrics</h2>
+      <p>一个计数器 + 一个直方图，各打 count 个点。</p>
+      <label>点数 count（≤10000）</label><input id="m-count" value="10">
+      <button onclick="send('metrics')">造指标</button>
+    </div>
+
+    <div class="card">
+      <h2>真实 HTTP 请求</h2>
+      <p>由 agent 的 Web 仪表化产生 server span，不走我们的代码。</p>
+      <label>睡眠毫秒</label><input id="w-ms" value="30">
+      <button class="ghost" onclick="work()">发一次请求</button>
+    </div>
+
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>本应用已产生的信号 <span class="pill" id="tick">每 2s 刷新</span></h2>
+    <p>这是断言用的期望值来源，与读口报出的条数对账。</p>
+    <table>
+      <thead><tr><th>信号</th><th style="text-align:right">数量</th><th>说明</th></tr></thead>
+      <tbody id="stats"><tr><td colspan="3" style="color:var(--dim)">加载中…</td></tr></tbody>
+    </table>
+    <div class="row" style="margin-top:14px">
+      <button class="ghost" onclick="send('reset')">清零计数</button>
+      <button class="ghost" onclick="location.reload()">刷新页面</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>存储读口</h2>
+    <div class="note pending">
+      <b>还没实现（Phase 5）。</b>读口是 agent 扩展里的一个 HTTP 服务，默认端口 <code>17890</code>，
+      端口被占用时自动退到随机端口并在日志里报实际值。届时本页会多一块内容，
+      直接读它的 <code>/metrics</code> 与 trace/log 查询口。<br><br>
+      <b>已知的坑：</b>读口在 <code>17890</code>，本页在 <code>18080</code>，属于跨源。
+      要么读口开 CORS，要么本页加一层代理，要么直接用浏览器打开读口那侧的页面。
+      这个取舍留到 Phase 5 定。
+    </div>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => n.toLocaleString('en-US');
+
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast on' + (isErr ? ' err' : '');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => { t.className = 'toast'; }, 4000);
+}
+
+async function post(path, query) {
+  const r = await fetch('/demo/' + path + '?' + query, { method: 'POST' });
+  if (!r.ok) throw new Error(path + ' -> HTTP ' + r.status);
+  return r.json();
+}
+
+async function send(kind) {
+  try {
+    let q = '';
+    if (kind === 'spans') {
+      q = `count=${$('s-count').value}&childPerSpan=${$('s-child').value}` +
+          `&errors=${$('s-err').value}&slow=${$('s-slow').value}&slowMs=${$('s-slowms').value}`;
+    } else if (kind === 'logs') {
+      q = `count=${$('l-count').value}&level=${$('l-level').value}`;
+    } else if (kind === 'metrics') {
+      q = `count=${$('m-count').value}`;
+    } else if (kind === 'reset') {
+      await post('reset', '');
+      toast('计数已清零');
+      refresh();
+      return;
+    }
+    const j = await post(kind, q);
+    toast(kind + ' 完成：' + JSON.stringify(j));
+    refresh();
+  } catch (e) {
+    toast(String(e), true);
+  }
+}
+
+async function work() {
+  try {
+    const r = await fetch('/demo/work?ms=' + $('w-ms').value);
+    toast('已发一次请求（server span 由 agent 产生）');
+  } catch (e) {
+    toast(String(e), true);
+  }
+}
+
+const ROWS = [
+  ['traces', 'spans', '含 demo.request 与子 span'],
+  ['traces', 'childSpans', 'demo.db.query'],
+  ['traces', 'errorSpans', 'status=ERROR'],
+  ['traces', 'slowSpans', '人为放慢'],
+  ['logs', 'logLines', '带 trace 上下文'],
+  ['metrics', 'metricPoints', 'counter + histogram'],
+];
+
+async function refresh() {
+  try {
+    const s = await (await fetch('/demo/stats')).json();
+    $('stats').innerHTML = ROWS.map(([sig, key, note]) =>
+      `<tr><td><code>${sig}</code></td>` +
+      `<td class="num" data-k="${key}">${fmt(s[key] ?? 0)}</td>` +
+      `<td style="color:var(--dim)">${note}</td></tr>`
+    ).join('') +
+    `<tr><td style="color:var(--dim)">应用 uptime</td>` +
+    `<td class="num">${fmt(Math.floor(s.uptimeMs / 1000))}s</td>` +
+    `<td style="color:var(--dim)">进程已运行</td></tr>`;
+  } catch (e) {
+    $('stats').innerHTML = `<tr><td colspan="3" style="color:var(--err)">读取失败：${e}</td></tr>`;
+  }
+}
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

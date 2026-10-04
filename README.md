@@ -2,7 +2,8 @@
 
 **把 OpenTelemetry 的 traces / logs / metrics 留在应用自己的进程内** —— 不发往任何远端，也不需要第二套 agent。
 
-> **状态：骨架阶段，尚不可运行。** 目前仓库只有一个能编译、能跑测试的空壳，功能尚未落地。
+> **状态：骨架阶段。** 库本身还只是配置层；**演示应用已经能跑**，
+> 它负责造三个信号并给出可断言的计数。存储与读口尚未落地（Phase 4 / 5）。
 > 本文里的"目标用法"是设计意图，不是现在就能跑的命令。README 随第一个可运行版本更新。
 
 - **前提**：JDK 8+ 的目标应用 + `opentelemetry-javaagent`（本项目作为 agent 扩展挂载）。
@@ -33,6 +34,18 @@
   明确排除，不是"以后顺手加上"。研究问题已记在 [`docs/notes/2026-10-04-profiling-research.md`](./docs/notes/2026-10-04-profiling-research.md)。
 - **Web UI** —— v1 只提供读口与 Prometheus 端点，产品级界面是独立里程碑。
 - **raw SQL 查询端点** —— 永远不提供。查询全部参数化，读口因此是结构性只读。
+
+## 演示应用
+
+`demo-app/` 是一个 Spring Boot 应用，按需造出 traces / logs / metrics，
+并把自己造了多少暴露成可断言的计数（`GET /demo/stats`）。
+
+```powershell
+pwsh -NoProfile -File scripts/run-with-agent.ps1
+# 打开 http://localhost:18081/
+```
+
+细节见 [`demo-app/README.md`](./demo-app/README.md)。
 
 ## 目标用法（尚未实现）
 

@@ -1,0 +1,22 @@
+server:
+  #18080 常被本机的其它服务占用（本项目写作时那里跑着 RuoYi-Flowable-Plus），故退到 18081。
+  # 撞端口时 Spring 会直接启动失败，不会自动退让 —— 演示环境手动改这里即可。
+  port: 18081
+  shutdown: graceful
+
+spring:
+  application:
+    name: otel-local-telemetry-store-demo
+  main:
+    # 关掉 banner，免得它混进我们要读的日志里
+    banner-mode: off
+  mvc:
+    problemdetails:
+      enabled: false
+
+logging:
+  level:
+    root: INFO
+    io.github.fulizhe.otelstore.demo: INFO
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{20} - %msg%n"

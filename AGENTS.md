@@ -7,6 +7,27 @@
 
 当前处于 **Phase 0（骨架）**：能编译、能跑测试，功能尚未落地。第一个可运行形态见 README 的"目标用法"。
 
+## 演示应用与靶子
+
+`demo-app/` 是独立的 Spring Boot 工程，**不在主工程的 maven reactor 里**（主工程保持单模块）。
+它造信号并给出可断言的计数，是端到端验证的靶子。
+
+```powershell
+pwsh -NoProfile -File scripts/run-with-agent.ps1   # 构建 + 挂 agent 与扩展 jar 一起起
+pwsh -NoProfile -File scripts/run-with-agent.ps1 -Port 18099 -SkipBuild
+```
+
+- 页面 `http://localhost:18081/`，日志 `demo-app/target/demo.log`
+- 单独构建：`mvn -f demo-app/pom.xml -DskipTests package`
+- 端点与断言口径见 [`demo-app/README.md`](./demo-app/README.md)
+
+**两条已知的本机环境坑**（写脚本/文档时别忘）：
+
+1. 本机设了 `HTTP_PROXY`，而 **PowerShell 7 的 `Invoke-RestMethod` / `Invoke-WebRequest`
+   不认 `NO_PROXY`** —— 访问 localhost 会超时。用 `curl.exe --noproxy "*"` 或加 `-NoProxy`。
+2. **`-Dotel.javaagent.extensions=` 指向不存在的路径时，agent 静默忽略、零告警。**
+   `scripts/run-with-agent.ps1` 会在起之前校验产物，堵掉这个坑。
+
 ## 构建与验证
 
 构建用 **JDK 17**，产出**字节码 8**（`maven.compiler.release=8`）——目标应用可能是 JDK 8。
