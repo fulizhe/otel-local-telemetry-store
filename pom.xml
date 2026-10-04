@@ -26,6 +26,12 @@
     <junit.version>5.10.2</junit.version>
     <otel.javaagent.version>2.32.0</otel.javaagent.version>
     <otel.extension.api.version>2.32.0-alpha</otel.extension.api.version>
+    <!--
+      SPI 版本必须与 agent 内嵌的那份逐方法一致，否则运行期 NoSuchMethodError。
+      已核对：1.66.0 与 agent 2.32.0 的 AutoConfigurationCustomizer 方法完全相同。
+      见 docs/notes/2026-10-04-r0-extension-points.md
+    -->
+    <otel.sdk.version>1.66.0</otel.sdk.version>
   </properties>
 
   <dependencies>
@@ -33,6 +39,14 @@
       <groupId>io.opentelemetry.javaagent</groupId>
       <artifactId>opentelemetry-javaagent-extension-api</artifactId>
       <version>${otel.extension.api.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- 扩展点本体。显式声明，不靠上面那个的传递依赖 —— 编译直接引用的类型必须自己钉住版本。 -->
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk-extension-autoconfigure-spi</artifactId>
+      <version>${otel.sdk.version}</version>
       <scope>provided</scope>
     </dependency>
 
