@@ -38,6 +38,12 @@
 - **metrics 不配行数水位**（原措辞只给 traces / logs 留了旋钮）：拒绝。不进环形文件不等于不要上界 —— 指标行同样写在 H2 表里，没有水位就是无界增长，直接违反本文的硬预算条款。metrics 行比 span 行轻（无 payload），但**在有实测数据之前不猜更小的值**，见 Consequences。
 - **给应用留一个可调的 toolkit 桩（对齐 SkyWalking 的宿主工具类）**：拒绝。前提不成立 —— extension-api 里没有 `InstrumentationAccess`，拿不到 `Instrumentation` 就无法 `appendToSystemClassLoaderSearch`；JDK 17 上反射 `ClassLoader.appendToClassPathForInstrumentation` 需要 `--add-opens`。改用 JMX：平台级，不受 ClassLoader 边界影响。
 - **把 agent 自监控指标一并存进本地库**：拒绝。用户查自己的 trace 时看到一半是 `jvm.*` 与 `otlp.exporter.*`，等于把 SDK 内部状态混进业务数据。这些指标走 JMX 面板，不入库。
+- **只把关停汇总（shutdown hook）当验收与自查信号**：拒绝（2026-10-04 实测后）。
+  `Stop-Process` / `taskkill` 走 `TerminateProcess`，**shutdown hook 根本不执行** ——
+  而 metrics 是纯内存表，关停那一行是它**唯一**的出口，"怎么停"直接决定"能不能验收"。
+  改为**每 60 秒打一行同格式的周期汇总**（复用同一个 `logSummary`，不新增格式、不新增计数器）；
+  关停那一行保留，作为"本次进程最终存了多少"的收尾。存储层不可用时不打周期行 ——
+  启动时已经警告过一次，每分钟重复只是噪声，而噪声会让人划走真正该看的那行。
 
 ## Consequences
 
@@ -47,5 +53,12 @@
 - `rows.metrics` 默认与 `rows.traces` / `rows.logs` 同档（200000）。**这是"未实测前不猜"的占位值，不是结论**：指标行确实更轻，等有了真实负载下"每行多大、增长多快"的数字再改 —— 与 `queue.capacity` 三个信号暂用同一容量是同一条理由。
 - 读口默认对内网开放。即便有 token，这也**扩大了攻击面**：trace 与 log 的载荷里装着 SQL 语句、HTTP header、请求体、日志原文。因此 token 必须每进程随机，且绝不出现在任何日志 / 快照 / 异常消息里（`LocalStoreConfig.describe()` 已按此实现）。
 - demo-app 不再像 SW 侧那样托管读口 —— 读口在扩展内部，与应用隔着三个 ClassLoader。它退化为"造信号 + 给出可断言的期望值"的靶子。
+- **扩展会每 60 秒往应用的日志里写一行 INFO 汇总**（队列计数 + 库内行数）。
+  这是**本扩展唯一默认的、周期性的日志输出**，必须写进部署文档：不想看就调低应用日志级别
+  （`io.github.fulizhe.otelstore` 这个 logger），但别指望"关掉它还能自查"——
+  关掉之后唯一剩下的自查通道就是读口。
+- 读口做完之前，**"现在库里有什么"只有三个答案**：这行周期汇总、`jconsole` 的
+  `LocalStoreSummary`、以及优雅关停时的那一行。三者口径同源（都走 `snapshot()`），
+  所以对不上就是 bug，不存在"各说各话"。
 - R0 笔记里被推翻的两条早期判断（"logs 只有同步钩子"、"toolkit 桩可做"）已改正，本 ADR 不再依赖它们。
 - ~~尚未决定、留给后续 ADR 的：三张表的具体列与索引、payload 存编码后的 OTLP bytes 还是解码后的结构、四种"数据少了"的口径定义。~~ **这三项都已定**：表结构与 payload 形态见 [adr-02](adr-02-data-model.md)，"数据少了"的口径见 [adr-03](adr-03-four-ways-data-goes-missing.md)。仍然悬着的是 metrics 的分钟/小时 rollup 表，以及多实例共用 `dataDir`（见 [index](index.md) 的「悬着的事」）。

@@ -7,7 +7,12 @@
 
   1. 构建库 jar 与 demo-app jar（-SkipBuild 可跳过）
   2. 校验 agent jar 与扩展 jar 都真的存在
-  3. 校验端口空闲，然后后台起进程，日志落到 demo-app/target/demo.log
+  3. 校验端口空闲，然后在**当前窗口**起进程（-NoNewWindow），日志落到 demo-app/target/demo.log 与 demo.err.log
+
+  关于第 3 条的窗口：以前用 -WindowStyle Hidden，结果 Ctrl-C 送不到进程，
+  只能 Stop-Process —— 而那是 TerminateProcess，**不执行 shutdown hook**，
+  扩展的"退出 … store spans=N"那一行（Phase 4b 的验收信号）永远打不出来。
+  -NoNewWindow 让 java 与本脚本共用控制台，Ctrl-C 就能触发优雅关停。
 
   关于第2 条：`-Dotel.javaagent.extensions=` 指向一个**不存在的路径**时，
   agent 会**静默忽略、不报任何错**。所以必须在这里替 agent 把这个坑堵掉 ——
@@ -100,7 +105,7 @@ $args = @(
     "--server.port=$Port"
 )
 $p = Start-Process -FilePath $java -ArgumentList $args -WorkingDirectory $demoDir `
-     -RedirectStandardOutput $logFile -RedirectStandardError $errFile -PassThru -WindowStyle Hidden
+     -RedirectStandardOutput $logFile -RedirectStandardError $errFile -PassThru -NoNewWindow
 
 Write-Host ""
 Write-Host "  PID      $($p.Id)" -ForegroundColor Green
@@ -109,11 +114,21 @@ Write-Host "  扩展 jar $($libJar.Name)" -ForegroundColor DarkGray
 Write-Host "  日志     $logFile" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "造点数据看效果：" -ForegroundColor Cyan
-Write-Host "  pwsh -NoProfile -Command Invoke-RestMethod -Method Post 'http://localhost:$Port/demo/spans?count=3&childPerSpan=2'"
-Write-Host "  pwsh -NoProfile -Command Invoke-RestMethod 'http://localhost:$Port/demo/stats'"
+Write-Host "  curl.exe --noproxy `"*`" -X POST `"http://localhost:$Port/demo/spans?count=3&childPerSpan=2`""
+Write-Host "  curl.exe --noproxy `"*`" `"http://localhost:$Port/demo/stats`""
+Write-Host ""
+Write-Host "看进度（每 60 秒会自己打一行汇总，含库里各类行数）：" -ForegroundColor Cyan
+Write-Host "  Get-Content '$errFile' -Wait | Select-String '周期|退出'"
+Write-Host ""
+Write-Host "停掉：**在这个窗口按 Ctrl-C**" -ForegroundColor Yellow
+Write-Host "      Ctrl-C 走优雅关停，会打出 `退出 … store spans=N logs=N metricPoints=N` 那一行。" -ForegroundColor Yellow
+Write-Host "      Stop-Process / taskkill / kill 是**强杀**，不执行 shutdown hook，拿不到那行 ——" -ForegroundColor Yellow
+Write-Host "      但周期汇总行照样有，所以验收不依赖它。" -ForegroundColor Yellow
+Write-Host "      万一只能用强杀：Stop-Process -Id $($p.Id)" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "注意：PowerShell 7 的 Invoke-RestMethod 不认 NO_PROXY，本机设了代理的话" -ForegroundColor Yellow
-Write-Host "      访问 localhost 会超时。用 curl.exe --noproxy \"*\"，或加 -NoProxy 参数。" -ForegroundColor Yellow
+Write-Host "      访问 localhost 会超时。用上面的 curl.exe --noproxy `"*`"，或加 -NoProxy 参数。" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "停掉：Stop-Process -Id $($p.Id)" -ForegroundColor DarkGray
-Write-Host "看日志：Get-Content '$logFile' -Encoding UTF8 -Wait" -ForegroundColor DarkGray
+Write-Host "看扩展日志：Get-Content '$errFile' -Wait" -ForegroundColor DarkGray
+Write-Host "      （别加 -Encoding UTF8：agent 用平台编码，本机是 GBK）" -ForegroundColor DarkGray
+Write-Host "看应用日志：Get-Content '$logFile' -Encoding UTF8 -Wait" -ForegroundColor DarkGray

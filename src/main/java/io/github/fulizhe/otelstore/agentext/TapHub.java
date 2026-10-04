@@ -27,12 +27,28 @@ public final class TapHub implements AutoCloseable {
 
     private static final Logger LOGGER = Logger.getLogger(TapHub.class.getName());
 
+    /**
+     * 周期汇总的间隔（秒）。
+     *
+     * <p><b>为什么需要周期汇总</b>：关停钩子那行汇总<b>不是可靠信号</b> ——
+     * {@code Stop-Process} 走 {@code TerminateProcess}，<b>shutdown hook 根本不执行</b>
+     * （2026-10-04 首次端到端时踩到：按脚本提示 {@code Stop-Process} 停进程，
+     * 结果一条汇总都没打，而那行恰恰是 metrics 的<b>唯一</b>证据 ——
+     * metrics 是纯内存表，进程一停就没了）。
+     *
+     * <p>所以口径不变、只是把同一行定期打一次：不新增格式、不新增计数器，
+     * 复用 {@link #logSummary(String)}，避免"两套汇总口径"这种最容易被对不上的东西。
+     */
+    static final long SUMMARY_INTERVAL_SECONDS = 60L;
+
     private final LocalStoreConfig config;
     private final RecordQueue<Object> traces;
     private final RecordQueue<Object> logs;
     private final RecordQueue<Object> metrics;
     /** 存储层；开不起来时为 null，三条 sink 退化为空实现。 */
     private final LocalStore store;
+    /** 周期汇总的调度器；{@code close()} 时关掉。 */
+    private final java.util.concurrent.ScheduledExecutorService heartbeat;
 
     public TapHub(final LocalStoreConfig config) {
         this.config = config;
@@ -41,12 +57,48 @@ public final class TapHub implements AutoCloseable {
         this.traces = new RecordQueue<Object>("traces", cap, spanSink(store));
         this.logs = new RecordQueue<Object>("logs", cap, logSink(store));
         this.metrics = new RecordQueue<Object>("metrics", cap, metricSink(store));
+        this.heartbeat = startHeartbeat();
         Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
             @Override
             public void run() {
                 logSummary("退出");
             }
         }, "otelstore-summary"));
+    }
+
+    /**
+     * 起周期汇总线程。
+     *
+     * <p><b>存储层不可用时不打</b>：那已经在启动时有一条警告了，
+     * 每 60 秒重复一次"存不了"只是噪声 —— 而噪声会让人把真正该看的那行划走。
+     *
+     * <p>线程是 daemon 且命名清晰：它绝不能挡住 JVM 退出，也必须在 dump 里能一眼认出。
+     */
+    private java.util.concurrent.ScheduledExecutorService startHeartbeat() {
+        if (store == null) {
+            return null;
+        }
+        final java.util.concurrent.ScheduledExecutorService svc =
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor(
+                        new java.util.concurrent.ThreadFactory() {
+                            @Override
+                            public Thread newThread(final Runnable r) {
+                                final Thread t = new Thread(r, "otelstore-summary-heartbeat");
+                                t.setDaemon(true);
+                                return t;
+                            }
+                        });
+        svc.scheduleAtFixedRate(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    logSummary("周期");
+                } catch (final Throwable ignored) {
+                    // 观测路径自身的异常绝不外抛，更不能因为一次失败把后续调度掐掉
+                }
+            }
+        }, SUMMARY_INTERVAL_SECONDS, SUMMARY_INTERVAL_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
+        return svc;
     }
 
     /**
@@ -228,6 +280,9 @@ public final class TapHub implements AutoCloseable {
         traces.close();
         logs.close();
         metrics.close();
+        if (heartbeat != null) {
+            heartbeat.shutdownNow();
+        }
         if (store != null) {
             store.close();
         }
