@@ -2,9 +2,13 @@
 
 **把 OpenTelemetry 的 traces / logs / metrics 留在应用自己的进程内** —— 不发往任何远端，也不需要第二套 agent。
 
-> **状态：骨架阶段。** 库本身还只是配置层；**演示应用已经能跑**，
-> 它负责造三个信号并给出可断言的计数。存储与读口尚未落地（Phase 4 / 5）。
-> 本文里的"目标用法"是设计意图，不是现在就能跑的命令。README 随第一个可运行版本更新。
+> **状态：存储已落地，端到端未验收。** 三条采集管线能把 traces / logs / metrics 写进本地库
+> （H2 内存表头 + 堆外环形载荷），并通过 **JMX** 读回来。**HTTP 读口与 Prometheus 端点还没做**，
+> 所以下面「目标用法」里只有存储与限额那几项配置**现在就有效果**，读口那几项要等下一阶段。
+> 演示应用已经能跑，负责造三个信号并给出可断言的计数。
+>
+> 端到端验收信号、失败判据与踩坑记录见
+> [`docs/notes/2026-10-04-verification-and-pitfalls.md`](./docs/notes/2026-10-04-verification-and-pitfalls.md)。
 
 - **前提**：JDK 8+ 的目标应用 + `opentelemetry-javaagent`（本项目作为 agent 扩展挂载）。
 - **许可**：Apache-2.0。
@@ -26,7 +30,8 @@
 
 - **traces** —— 事件流，表头行入库，明细载荷落堆外环形文件
 - **logs** —— 事件流，同上；日志记录自带 trace / span 上下文，可按 trace 拉全量日志
-- **metrics** —— 时间序列 rollup 入库，不进环形文件
+- **metrics** —— 周期性快照按「时间序列形态」入库（采集周期 × 指标 × 属性组合 = 一行），不进环形文件。
+  **分钟 / 小时 rollup 表未做**，本版只有行数水位（[ADR-2](docs/adr/adr-02-data-model.md)）
 
 **不做**：
 
@@ -58,8 +63,8 @@ token 每进程随机生成，写在 `*.token` 文件与启动日志里，**绝�
 需要真正无鉴权时显式配 `otel.localstore.auth=false`。
 
 **⑤ agent 自监控指标不入库。**
-按 instrumentation scope 前缀黑名单过滤。这些指标走 JMX 面板 —— 它们回答"SDK 健康吗"，
-与业务数据混在一张库里既污染查询也误导排障。
+按 instrumentation scope 前缀黑名单过滤。它们回答的是"SDK 健康吗"，与业务数据混在一张库里
+既污染查询也误导排障。**看它们的地方是 JMX 与启动日志** —— 专门的指标面板随 HTTP 读口一起做。
 
 **⑥ 不支持 profiling。** 需要 native agent，OTel 信号管线给不了。
 
@@ -76,16 +81,39 @@ pwsh -NoProfile -File scripts/run-with-agent.ps1
 # 打开 http://localhost:18081/
 ```
 
+`/demo/stats` 是**对账基准**：库里（停进程时日志里 `store spans=N` 那一行，或 JMX 的
+`spanRows()`）的条数应当与它对得上，差额就是采样、SDK 截断与队列丢弃 ——
+那几种"数据少了"在原理上不可计数，只能这样对照发现
+（[ADR-3](docs/adr/adr-03-four-ways-data-goes-missing.md)）。
+
+**网页上看不到库里存的东西** —— 它目前只显示自己造了多少。浏览器可读的数据要等 HTTP 读口。
+
 细节见 [`demo-app/README.md`](./demo-app/README.md)。
 
-## 目标用法（尚未实现）
+## 目标用法
+
+存储部分**现在就能跑**；读口那几项配置要等 HTTP 阶段。
 
 ```bash
 java -javaagent:opentelemetry-javaagent.jar \
      -Dotel.javaagent.extensions=otel-local-telemetry-store.jar \
-     -Dotel.localstore.port=17890 \
      -Dotel.localstore.dataDir=/var/lib/otel-store \
+     -Dotel.localstore.capped.traces.bytes=268435456 \
+     -Dotel.localstore.rows.metrics=200000 \
      -jar your-app.jar
+```
+
+数据落在 `dataDir` 里（`traces.capped` / `logs.capped` 两个环形文件 + 内存里的表头），
+**查它靠 JMX**：`jconsole` 连上本进程 → MBeans → `io.github.fulizhe.otelstore` →
+`LocalStoreSummary`，`summary` / `recentSpans(10)` / `spansOfTrace(<trace_id>)` /
+`spanPayloadHex(<id>)` 直接可点。
+
+下一阶段的形态是补上 HTTP 读口（含 Prometheus 文本端点），届时再生效的是：
+
+```bash
+     -Dotel.localstore.host=0.0.0.0 \
+     -Dotel.localstore.port=17890 \
+     -Dotel.localstore.auth=true \
 ```
 
 端口被占用时自动退到随机端口并在日志里报实际值 —— **端口冲突不会让应用启动失败**。
@@ -97,10 +125,10 @@ java -javaagent:opentelemetry-javaagent.jar \
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `host` | `0.0.0.0` | 读口绑定地址，默认允许远程访问 |
-| `port` | `17890` | 读口端口；避开 OTLP 惯例的 4317 / 4318 |
-| `auth` | `true` | 是否要求访问 token |
-| `token` | 进程启动时随机生成 | 写入 `*.token` 文件与启动日志 |
+| `host` | `0.0.0.0` | 读口绑定地址，默认允许远程访问。**读口未做，暂不生效** |
+| `port` | `17890` | 读口端口；避开 OTLP 惯例的 4317 / 4318。**同上** |
+| `auth` | `true` | 是否要求访问 token。**同上** |
+| `token` | 进程启动时随机生成 | 写入 `*.token` 文件与启动日志。**同上** |
 | `dataDir` | `./otel-local-telemetry-store` | 数据目录 |
 | `capped.traces.bytes` | 256 MiB | traces 环形文件容量 |
 | `capped.logs.bytes` | 256 MiB | logs 环形文件容量 |
@@ -108,13 +136,16 @@ java -javaagent:opentelemetry-javaagent.jar \
 | `rows.traces` / `rows.logs` / `rows.metrics` | 200000 | 表头行水位，超出按最旧淘汰。三个信号各自独立；metrics 行更轻，但未实测前不猜更小的值 |
 | `queue.capacity` | 4096 | **每条信号**各自的有界队列深度；满了就丢弃并计数，不阻塞 |
 
+标「未生效」的那几项不是配置坏了，是**读口本身还没实现** —— 它们现在以默认值生效，
+HTTP 阶段接上后立刻可用。
+
 ## 代码分层
 
 ```
 io.github.fulizhe.otelstore
 ├── core      与 OTel 无关：配置、存储、统计
 ├── agentext  OTel 接入：SPI provider 与三条信号管线
-└── readout   读口：JMX、HTTP、Prometheus 渲染
+└── readout   读口：JMX、HTTP、Prometheus 渲染（**目前只有 JMX**）
 ```
 
 `core` 不许 import 任何 `io.opentelemetry.*` —— 存储层与采集端解耦，是它能独立复用的唯一保证。

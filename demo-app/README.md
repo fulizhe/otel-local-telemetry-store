@@ -48,8 +48,18 @@ curl.exe --noproxy "*" -X POST "http://localhost:18081/demo/spans?count=3&childP
 | `POST /demo/reset` | 计数清零 | — |
 
 `/demo/stats` 的存在理由：**端到端验证需要一个不依赖读口的期望值来源。**
-读口要到 Phase 5 才有，而"我造了 3 个 span"这件事应用自己就知道 ——
-拿它和读口报出的条数对账，这就是 SW 侧"影子对账"的轻量版。
+"我造了 3 个 span"这件事应用自己就知道 —— 拿它和库里实际的条数对账，
+这就是 SW 侧"影子对账"的轻量版，也是 ADR-3 里那几种"数据少了"**唯一**的发现手段
+（采样与 SDK 截断在原理上不可计数）。
+
+对账的两边分别是：
+
+| 一边 | 在哪看 |
+| --- | --- |
+| 本应用造了多少 | `GET /demo/stats`（六个计数） |
+| 库里存了多少 | 停进程时日志的 `退出 … \| store spans=N logs=N metricPoints=N`，或 JMX 的 `spanRows()` / `logRows()` / `metricRows()` |
+
+两边差额应当只来自采样与丢弃；出现别的差额就是 bug。
 
 ## 两个坑
 
@@ -68,12 +78,18 @@ Invoke-RestMethod -NoProxy http://localhost:18081/demo/stats   # PS7 支持 -NoP
 
 ## 现在还看不到什么
 
-**存储与读口都还没有**（Phase 4 / Phase 5）。所以现在：
+**存储已经能用了，但只有 JMX 那条读口**（Phase 4b 落地，Phase 5 未做）。所以现在：
 
-- 造出来的信号**进不了任何存储** —— agent 的三个 exporter 被脚本设成了 `none`
-- 页面上的「存储读口」卡片只是一段说明
+- 造出来的信号**真的进了本地库** —— H2 内存表头 + 两个堆外环形文件，落在 `dataDir` 里
+- **页面上的「存储读口」卡片仍只是一段说明**：HTTP 读口还没做，浏览器读不到
+- 要在浏览器之外看数据，用 `jconsole` 连本进程 → MBeans →
+  `io.github.fulizhe.otelstore` → `LocalStoreSummary`
+  （`summary` / `recentSpans(10)` / `spansOfTrace(<trace_id>)` / `spanPayloadHex(<id>)`）
 
-Phase 5 之后，读口是 agent 扩展里的一个 HTTP 服务（默认端口 `17890`，撞端口自动退随机），
+验收信号与失败判据见
+[`../docs/notes/2026-10-04-verification-and-pitfalls.md`](../docs/notes/2026-10-04-verification-and-pitfalls.md)。
+
+Phase 5 之后，读口会是 agent 扩展里的一个 HTTP 服务（默认端口 `17890`，撞端口自动退随机），
 届时本页会多一块内容直接读它。
 
 **已知的跨源问题**：读口在 `17890`、本页在 `18081`，属于跨源。

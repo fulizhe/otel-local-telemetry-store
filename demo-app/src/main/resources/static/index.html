@@ -78,7 +78,7 @@
   <h1>otel-local-telemetry-store · 演示控制台</h1>
   <div class="sub">
     本页只负责<b>造信号</b>与显示<b>本应用造了多少</b>。
-    存储与读口在 agent 扩展里，<span class="pill">Phase 5 才可见</span>
+    信号已经真的落库了，但读口只有 JMX，<span class="pill">本页暂时读不到</span>
   </div>
 </header>
 
@@ -127,7 +127,7 @@
 
   <div class="card" style="margin-top:16px">
     <h2>本应用已产生的信号 <span class="pill" id="tick">每 2s 刷新</span></h2>
-    <p>这是断言用的期望值来源，与读口报出的条数对账。</p>
+    <p>这是断言用的期望值来源，与库里的条数（<code>spanRows()</code>）对账。</p>
     <table>
       <thead><tr><th>信号</th><th style="text-align:right">数量</th><th>说明</th></tr></thead>
       <tbody id="stats"><tr><td colspan="3" style="color:var(--dim)">加载中…</td></tr></tbody>
@@ -140,13 +140,19 @@
 
   <div class="card" style="margin-top:16px">
     <h2>存储读口</h2>
-    <div class="note pending">
-      <b>还没实现（Phase 5）。</b>读口是 agent 扩展里的一个 HTTP 服务，默认端口 <code>17890</code>，
-      端口被占用时自动退到随机端口并在日志里报实际值。届时本页会多一块内容，
-      直接读它的 <code>/metrics</code> 与 trace/log 查询口。<br><br>
-      <b>已知的坑：</b>读口在 <code>17890</code>，本页在 <code>18080</code>，属于跨源。
+    <div class="note">
+      <b>存储已经能用了，但只有 JMX 那条读口。</b>本页读不到它 ——
+      HTTP 读口是下一阶段的事。数据确实落库了，查看方式：<br><br>
+      <code>jconsole</code> 连本进程 → MBeans → <code>io.github.fulizhe.otelstore</code> →
+      <code>LocalStoreSummary</code>，下面四个直接可点：<br>
+      <code>summary</code>（全量计数）· <code>recentSpans(10)</code>（最近 10 条 span 表头）·
+      <code>spansOfTrace(&lt;trace_id&gt;)</code>（按 trace 取回全部 span）·
+      <code>spanPayloadHex(&lt;id&gt;)</code>（读回单条的环形载荷）。<br><br>
+      <b>对账：</b>上表的条数应当与 <code>spanRows()</code> 对得上，差额来自采样与丢弃
+      （head sampling 与 SDK 截断在原理上不可计数，只能这样对照发现）。<br><br>
+      <b>已知的坑：</b>HTTP 读口在 <code>17890</code>、本页在 <code>18081</code>，属于跨源。
       要么读口开 CORS，要么本页加一层代理，要么直接用浏览器打开读口那侧的页面。
-      这个取舍留到 Phase 5 定。
+      这个取舍留到下一阶段定。
     </div>
   </div>
 
