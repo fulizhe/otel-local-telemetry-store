@@ -20,7 +20,7 @@
 - **raw SQL 查询端点** —— 永远不提供，读口因此是结构性只读而非约定只读
 - **产品级 Web UI** —— v1 只给读口与 Prometheus 端点
 
-## 非让的原则
+## 不可让的原则
 
 1. **资源属性白名单 + 脱敏。** 实测 Resource 有 18 个属性且三信号完全相同，其中 `process.command_line` 是**完整命令行** —— 命令行里带 `-Dxxx.token=` 就等于把密钥存盘。落库只取白名单键。
 2. **自监控指标按 instrumentation scope 过滤。** 实测 agent 自身的 `io.opentelemetry.sdk.trace` / `io.opentelemetry.sdk.logs` / `io.opentelemetry.runtime-telemetry-java8` / `io.opentelemetry.exporters.otlp-http` 指标也会流进我们的 reader；不过滤，用户库里一半是 agent 自监控数据。反过来，SDK 层的丢弃信号（`processedSpans[dropped=true]`、`processedLogs`、`queueSize`）是白送的，不必自己埋点。

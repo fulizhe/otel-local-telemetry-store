@@ -91,4 +91,8 @@ io.github.fulizhe.otelstore
 - [`docs/adr/`](./docs/adr/) —— 架构决策记录
 - [`docs/notes/`](./docs/notes/) —— 调研笔记
 
-已落盘的决策：[ADR-1 三个信号就地落库、只读暴露](docs/adr/adr-01-scope-and-principles.md)。
+已落盘的决策：
+
+- [ADR-1 三个信号就地落库、只读暴露](docs/adr/adr-01-scope-and-principles.md)
+- [ADR-2 payload 存编码后的 OTLP bytes，Resource 抽字典表](docs/adr/adr-02-data-model.md)
+- [ADR-3 "数据少了"有五种形态，各计各的](docs/adr/adr-03-four-ways-data-goes-missing.md)
