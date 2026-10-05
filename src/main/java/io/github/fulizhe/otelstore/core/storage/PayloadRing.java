@@ -80,24 +80,69 @@ final class PayloadRing implements Closeable {
         }
     }
 
+/**
+ * 读回的结果：字节 + 它到底是"没有"还是"过期了"。
+ *
+ * <p>分这两件事不是为了多一个字段，是因为它们的<b>处置完全不同</b>：
+ * 过期是环形文件写满的预期结果（ADR-3 第 2 种形态），而"没有载荷"往往是写入时被拒
+ * 或编码失败（ADR-3 第 3 种）。读口若只拿到一个 {@code null}，就只能把这两件事
+ * 一起报成"载荷不可用" —— 而用户看到"不可用"会去查磁盘，磁盘其实完全正常。
+ */
+static final class Read {
+
+    private final byte[] bytes;
+    private final boolean overwritten;
+
+    private Read(final byte[] bytes, final boolean overwritten) {
+        this.bytes = bytes;
+        this.overwritten = overwritten;
+    }
+
+    byte[] bytes() {
+        return bytes;
+    }
+
+    /** 读回 null 时才有意义：这个位置是否已被新块覆盖。 */
+    boolean overwritten() {
+        return overwritten;
+    }
+
     /**
-     * 读回一个载荷块。
+     * <b>注意：{@code bytes == null} 时也必须把 {@code overwritten} 带出去。</b>
      *
-     * @return 原始载荷；{@code null} 表示已被环覆盖（<b>过期是预期行为</b>，不是故障）
+     * <p>写成 {@code bytes == null ? NONE : new Read(bytes, overwritten)} 会把覆盖标志
+     * 在最需要它的时候丢掉 —— 因为"读不到"恰恰就是 {@code bytes == null} 的时候。
+     * 后果是"过期"全部退化成"没有载荷"，而这两种情况的处置完全相反
+     * （ADR-3 第 2 种与第 3 种）。这个 bug 由 {@code HttpReadoutTest} 的
+     * "四种原因分得开"那条用例抓出来。
      */
-    byte[] read(final long id) {
+    static Read of(final byte[] bytes, final boolean overwritten) {
+        return new Read(bytes, bytes != null || overwritten);
+    }
+}
+
+    /**
+     * 读一个载荷块，并说清它是"没有"还是"过期了"。
+     *
+     * <p>见 {@link Read}：这个区分是给读口用的，存储自己并不需要。
+     */
+    Read read(final long id) {
         if (id == NO_BLOCK) {
-            return null;
+            return Read.of(null, false);
         }
         try {
             final byte[] out = storage.readMessage(id);
-            if (out == null && storage.isOverwritten(id)) {
+            if (out != null) {
+                return Read.of(out, false);
+            }
+            final boolean overwritten = storage.isOverwritten(id);
+            if (overwritten) {
                 expiredReadCount.incrementAndGet();
             }
-            return out;
+            return Read.of(null, overwritten);
         } catch (final IOException e) {
             ThrottledLogger.warn("payload-read-failed-" + signal, signal + " 载荷读环失败", e);
-            return null;
+            return Read.of(null, false);
         }
     }
 

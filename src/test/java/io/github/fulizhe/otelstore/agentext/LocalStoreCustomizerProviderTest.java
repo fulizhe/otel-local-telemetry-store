@@ -105,17 +105,22 @@ class LocalStoreCustomizerProviderTest {
     }
 
     @Test
-    @DisplayName("非法配置值回落默认值，不抛异常")
+    @DisplayName("非法取值回落默认值，不抛异常")
     void illegalValuesFallBack(@TempDir final File dataDir) {
-        final Map<String, String> p = props(dataDir);
-        p.put("queue.capacity", "0");
-        p.put("rows.traces", "-5");
-        p.put("capped.traces.bytes", "not-a-number");
+        final Map<String, String> props = new LinkedHashMap<String, String>();
+        // dataDir 必须给：这个用例走 provider 的 create()，它会真的开存储层，
+        // 而默认的 ./otel-local-telemetry-store 会在**仓库根目录**建出两个 256 MiB 的环文件。
+        // Phase 4b 之前这里没给 dataDir/storage 还不存在，所以没出事；现在会。
+        props.put("dataDir", dataDir.getAbsolutePath());
+        props.put("queue.capacity", "0");
+        props.put("rows.traces", "-5");
+        props.put("capped.traces.bytes", "not-a-number");
 
-        try (TapHub hub = LocalStoreCustomizerProvider.create(p)) {
+        try (TapHub hub = LocalStoreCustomizerProvider.create(props)) {
             assertEquals(LocalStoreConfig.DEFAULT_QUEUE_CAPACITY, hub.config().getQueueCapacity());
             assertEquals(LocalStoreConfig.DEFAULT_ROWS_TRACES, hub.config().getRowsTraces());
             assertEquals(LocalStoreConfig.DEFAULT_CAPPED_TRACES_BYTES, hub.config().getCappedTracesBytes());
+            assertNotNull(hub.store(), "非法值只影响那几项，存储层照常开起来");
         }
     }
 

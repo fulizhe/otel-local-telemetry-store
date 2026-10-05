@@ -139,6 +139,13 @@
     </table>
   </div>
 
+  <div class="card" id="detail-card" style="display:none">
+    <h2>详情 <span class="pill" id="detail-kind"></span>
+      <button class="ghost" style="float:right" onclick="closeDetail()">关闭</button></h2>
+    <div id="detail-msg" class="foot"></div>
+    <div id="detail-body"></div>
+  </div>
+
   <div class="card">
     <h2>生效配置</h2>
     <table><tbody id="config"><tr><td colspan="2" style="color:var(--dim)">–</td></tr></tbody></table>
@@ -153,10 +160,10 @@
     所以现在看到的是 <code>a3f9c2e1</code> 而不是 <code>region="east"</code>。
     各条线仍然是<b>分开</b>的，只是标签暂时读不懂。
     <br>
-    其余端点（自监控、自日志、载荷详情）随 Phase 5 逐段落地。
+    其余端点（自监控、自日志）随 Phase 5 逐段落地。
     <br>
-    <b>行点击</b>：现在还不能点开单条详情 —— 载荷解码那一段还没做（ADR-6 第七节）。
-    这一版能做的联查是点行尾的 <code>trace</code>，它把 span 与日志一起收窄到同一个 trace。
+    <b>载荷说明</b>：载荷可能被环形文件覆盖 —— <b>过期不是故障</b>（容量到顶的预期行为）。
+    真的载荷不可用时详情页会给出四种不同的原因，别把它们看成同一件事。
   </div>
 </div>
 
@@ -299,7 +306,8 @@
       : '没有数据 —— 这不是故障：可能是没数据、已被行数水位淘汰、或该 trace 的采集期已过。';
     $('spans-count').textContent = res.d.length + ' 条';
     $('spans').innerHTML = res.d.map(function (r) {
-      return '<tr><td>' + esc(ts(r.startTime)) + '</td>'
+      return '<tr data-detail="' + esc(r.id) + '" data-kind="span" title="点开看详情">'
+        + '<td>' + esc(ts(r.startTime)) + '</td>'
         + '<td>' + esc(clip(r.name, 48))
           + (r.traceId ? traceLink(r.traceId) : '')
           + '</td>'
@@ -331,7 +339,8 @@
     $('logs-msg').textContent = res.d.length ? '共 ' + res.d.length + ' 条' : '没有数据。';
     $('logs-count').textContent = res.d.length + ' 条';
     $('logs').innerHTML = res.d.map(function (r) {
-      return '<tr><td>' + esc(ts(r.timestamp)) + '</td>'
+      return '<tr data-detail="' + esc(r.id) + '" data-kind="log" title="点开看详情">'
+        + '<td>' + esc(ts(r.timestamp)) + '</td>'
         + '<td>' + esc(clip(r.severityText || severityName(r.severityNumber), 12)) + '</td>'
         + '<td>' + esc(clip(r.bodyPreview, 90)) + '</td>'
         + '<td>' + (r.traceId
@@ -347,11 +356,106 @@
     ['spans', 'logs'].forEach(function (id) {
       $(id).addEventListener('click', function (ev) {
         var a = ev.target.closest ? ev.target.closest('a[data-trace]') : null;
-        if (!a) { return; }
-        ev.preventDefault();
-        pickTrace(a.getAttribute('data-trace'));
+        if (a) {
+          ev.preventDefault();
+          pickTrace(a.getAttribute('data-trace'));
+          return;
+        }
+        var row = ev.target.closest ? ev.target.closest('tr[data-detail]') : null;
+        if (row) {
+          openDetail(row.getAttribute('data-detail'), row.getAttribute('data-kind'));
+        }
       });
     });
+    // 表头行也做成可点的样子 —— 否则"行可点"这件事只能靠猜
+    ['spans', 'logs'].forEach(function (id) {
+      $(id).style.cursor = 'pointer';
+    });
+  }
+
+  // ---------------- 详情
+
+  function closeDetail() { $('detail-card').style.display = 'none'; }
+
+  function openDetail(id, kind) {
+    var isSpan = kind !== 'log';
+    var card = $('detail-card');
+    card.style.display = '';
+    $('detail-kind').textContent = isSpan ? 'span #' + id : '日志 #' + id;
+    $('detail-msg').textContent = '加载中…';
+    $('detail-body').innerHTML = '';
+    fetch('/api/' + (isSpan ? 'traces/' : 'logs/') + id, { headers: headers(), cache: 'no-store' })
+      .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
+      .then(function (res) {
+        if (res.s === 401) { $('auth-card').style.display = ''; return; }
+        if (res.s !== 200 || !res.d) {
+          $('detail-msg').innerHTML = '<span class="err">' + esc(errorText(res)) + '</span>';
+          return;
+        }
+        renderDetail(res.d, isSpan);
+      })
+      .catch(function (e) {
+        $('detail-msg').innerHTML = '<span class="err">读详情失败：' + esc(e.message) + '</span>';
+      });
+  }
+
+  function renderDetail(d, isSpan) {
+    var head = '<table><tbody>' + kv([
+      ['trace_id', d.traceId], ['span_id', d.spanId],
+      isSpan ? ['parent_span_id', d.parentSpanId] : ['severity', d.severityText || severityName(d.severityNumber)],
+      ['scope', (d.scopeName || '') + (d.scopeVersion ? ' ' + d.scopeVersion : '')],
+      ['资源', d.resource]
+    ]) + '</tbody></table>';
+
+    var p = d.payload || {};
+    var payloadHtml;
+    if (p.available) {
+      payloadHtml = '<div class="foot">载荷 ' + esc(p.bytes) + ' 字节，已解码</div>'
+        + attrTable((p.decoded || {}).attributes)
+        + (isSpan ? eventTable(p.decoded) + statusLine(p.decoded) : '');
+    } else {
+      // 三种"读不到"各有各的说法，**别混成一句"不可用"**：
+      // 过期不是故障、没有载荷不影响查询、corrupt 才是真的坏了
+      var kind = p.reason === 'expired' ? 'note' : 'err';
+      payloadHtml = '<div class="note ' + (kind === 'note' ? '' : 'pending') + '" style="margin-top:10px">'
+        + '<b>' + esc(p.reason || 'unavailable') + '</b> —— ' + esc(p.detail || '') + '</div>';
+    }
+
+    $('detail-msg').innerHTML = '';
+    $('detail-body').innerHTML = head + '<h3 style="font-size:13px;margin:14px 0 4px">属性</h3>'
+      + payloadHtml;
+  }
+
+  function attrTable(attrs) {
+    if (!attrs || !attrs.length) {
+      return '<div class="foot">没有属性</div>';
+    }
+    return '<table><thead><tr><th>键</th><th>类型</th><th>值</th></tr></thead><tbody>'
+      + attrs.map(function (a) {
+          return '<tr><td>' + esc(a.key) + '</td><td>' + esc(clip(a.type, 18)) + '</td>'
+            + '<td>' + esc(clip(typeof a.value === 'object' ? JSON.stringify(a.value) : a.value, 120))
+            + '</td></tr>';
+        }).join('') + '</tbody></table>';
+  }
+
+  function eventTable(decoded) {
+    var events = (decoded || {}).events || [];
+    if (!events.length) { return ''; }
+    return '<h3 style="font-size:13px;margin:14px 0 4px">事件（' + events.length + '）</h3>'
+      + '<table><thead><tr><th>时间</th><th>名字</th><th>属性</th></tr></thead><tbody>'
+      + events.map(function (e) {
+          return '<tr><td>' + esc(ts(e.timeUnixNano)) + '</td><td>' + esc(e.name) + '</td>'
+            + '<td>' + esc(clip((e.attributes || []).map(function (a) {
+                return a.key + '=' + a.value;
+              }).join('，'), 100)) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+  }
+
+  function statusLine(decoded) {
+    var s = (decoded || {}).status;
+    if (!s || s.code === 'STATUS_CODE_UNSET') { return ''; }
+    return '<div class="foot" style="margin-top:8px">状态：<b>' + esc(s.code) + '</b> '
+      + esc(s.message || '') + '</div>';
   }
 
   function pickTrace(id) {

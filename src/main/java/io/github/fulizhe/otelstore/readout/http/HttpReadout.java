@@ -5,7 +5,9 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.fulizhe.otelstore.core.config.LocalStoreConfig;
 import io.github.fulizhe.otelstore.core.util.ThrottledLogger;
+import io.github.fulizhe.otelstore.core.storage.LocalStore;
 import io.github.fulizhe.otelstore.readout.ReadoutQueries;
+import io.github.fulizhe.otelstore.readout.payload.PayloadDecoder;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -14,8 +16,10 @@ import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -215,6 +219,17 @@ public static HttpReadout start(final LocalStoreConfig config, final ReadoutQuer
                     servePage(exchange);
                     return;
                 }
+                // 路径参数端点：**只做前缀匹配，不做通配、不做多段、不做正则**（ADR-6 第七节）。
+                // 于是 /api/traces/1/2、/api/traces/../x 整串会被当作 id 去解析 → 非数字 → 400，
+                // 没有路径穿越的口子。
+                if (path.startsWith("/api/traces/")) {
+                    serveDetail(exchange, path.substring("/api/traces/".length()), true);
+                    return;
+                }
+                if (path.startsWith("/api/logs/")) {
+                    serveDetail(exchange, path.substring("/api/logs/".length()), false);
+                    return;
+                }
                 if ("/api/summary".equals(path)) {
                     if (!authorized(exchange)) {
                         return;
@@ -318,6 +333,79 @@ public static HttpReadout start(final LocalStoreConfig config, final ReadoutQuer
             serveJson(exchange, out);
         }
 
+        /**
+         * 单条详情：表头 + 载荷状态 + 解码后的内容。
+         *
+         * <p>{@code payload.reason} 是这一页最重要的字段：载荷读不出来有四种原因，
+         * 而<b>过期是环形文件写满的预期结果、不是故障</b>（ADR-6 第七节、ADR-3 第 2 种）。
+         * 只报一个"不可用"会把"正常过期"和"数据坏了"混成同一件事。
+         *
+         * <p>行不存在返回 <b>404</b>，而列表的"合法但没有数据"是 200 + 空数组 ——
+         * 一个不存在的 id 是请求写错，空数组是"确实没有"。
+         */
+        private void serveDetail(final HttpExchange exchange, final String rawId, final boolean span)
+                throws IOException {
+            if (!authorized(exchange)) {
+                return;
+            }
+            if (!isRowId(rawId)) {
+                sendError(exchange, 400, "bad_request",
+                        "id 必须是纯数字（它就是表头行的主键），实际收到：" + rawId);
+                return;
+            }
+            if (!queries.isStoreAvailable()) {
+                sendError(exchange, 503, "no_store",
+                        "存储层不可用，本次只计数不落库。原因是数据目录不可写，详见扩展自己的日志。");
+                return;
+            }
+            final long id = Long.parseLong(rawId);
+            final Map<String, Object> header = span ? queries.spanHeader(id) : queries.logHeader(id);
+            if (header == null) {
+                sendError(exchange, 404, "not_found",
+                        "没有 id=" + id + " 这一行。它可能已被行数水位淘汰，也可能 id 写错了。");
+                return;
+            }
+            final Map<String, Object> out = new LinkedHashMap<String, Object>(header);
+            appendResource(out, header, queries);
+            out.put("payload", payloadOf(id, span));
+            serveJson(exchange, out);
+        }
+
+        /** 载荷段：状态 + 字节数 + 解码结果；<b>不含原始字节</b>（不做载荷下载口，ADR-6 第七节）。 */
+        private Map<String, Object> payloadOf(final long id, final boolean span) {
+            final LocalStore.PayloadResult result = span
+                    ? queries.spanPayloadOf(id) : queries.logPayloadOf(id);
+            final Map<String, Object> payload = new LinkedHashMap<String, Object>();
+            if (result == null) {
+                payload.put("available", Boolean.FALSE);
+                payload.put("reason", "unavailable");
+                return payload;
+            }
+            if (!result.isAvailable()) {
+                payload.put("available", Boolean.FALSE);
+                payload.put("state", result.getState().name());
+                payload.put("reason", reasonOf(result.getState()));
+                payload.put("detail", explain(result.getState()));
+                return payload;
+            }
+            final byte[] bytes = result.getBytes();
+            payload.put("available", Boolean.TRUE);
+            payload.put("state", result.getState().name());
+            payload.put("bytes", Integer.valueOf(bytes.length));
+            final Map<String, Object> decoded = span
+                    ? PayloadDecoder.decodeSpan(bytes) : PayloadDecoder.decodeLog(bytes);
+            if (decoded == null) {
+                // 字节在但解不出来 —— 这是**故障**，与"过期"必须分开说
+                payload.put("available", Boolean.FALSE);
+                payload.put("reason", "corrupt");
+                payload.put("detail", "载荷字节解不出 OTLP 结构。写入路径或环文件可能有问题，"
+                        + "详见扩展自己的日志。");
+                return payload;
+            }
+            payload.put("decoded", decoded);
+            return payload;
+        }
+
         private void serveJson(final HttpExchange exchange, final Object payload) throws IOException {
             writeJson(exchange, 200, Json.write(payload));
         }
@@ -418,6 +506,59 @@ public static HttpReadout start(final LocalStoreConfig config, final ReadoutQuer
             out.add(copy);
         }
         return out;
+    }
+
+    /** 详情里补上 Resource 的规范化文本（列表端点是每行都补，这里只有一行）。 */
+    static void appendResource(final Map<String, Object> out, final Map<String, Object> header,
+            final ReadoutQueries queries) {
+        final Object rid = header.get("resourceId");
+        if (!(rid instanceof Number)) {
+            return;
+        }
+        final Map<Long, String> one = queries.resourceAttributesOf(
+                Collections.singletonList(header));
+        final String text = one.get(Long.valueOf(((Number) rid).longValue()));
+        out.put("resource", text == null ? "" : text);
+    }
+
+    static String reasonOf(final LocalStore.PayloadState state) {
+        return state.name().toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * 每种"读不到"都说清它意味着什么 —— 用户看到"不可用"会自己去猜，
+     * 而"过期"与"坏了"要他去的地方完全不同。
+     */
+    static String explain(final LocalStore.PayloadState state) {
+        switch (state) {
+            case EXPIRED:
+                return "载荷已被环形文件覆盖。**这不是故障** —— 环写满是预期行为"
+                        + "（容量到顶），要留住更久的载荷就调大 capped.*.bytes";
+            case NO_PAYLOAD:
+                return "这一行没有载荷：写入时超了 max.payload.bytes、或编码失败。"
+                        + "表头行仍然在库里，查询不受影响";
+            case MISSING:
+                return "没有这一行：已被行数水位淘汰，或 id 写错了";
+            default:
+                return "";
+        }
+    }
+
+    /**
+     * id 只接受纯数字：它就是表头行的主键，不是数字的东西不该进到按主键查的代码里。
+     *
+     * <p>长度上限 18 位（{@code long} 最多 19 位）—— 溢出会变成另一个 id，而那是更难查的错。
+     */
+    static boolean isRowId(final String raw) {
+        if (raw == null || raw.isEmpty() || raw.length() > 18) {
+            return false;
+        }
+        for (int i = 0; i < raw.length(); i++) {
+            if (Character.digit(raw.charAt(i), 10) < 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

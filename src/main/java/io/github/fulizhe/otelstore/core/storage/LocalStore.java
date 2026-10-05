@@ -556,29 +556,78 @@ public final class LocalStore implements AutoCloseable {
     }
 
     /**
-     * 按行 id 读回 span 的载荷。
+     * 一条 span 的载荷与它的状态。
+     *
+     * <p>为什么要"状态"而不只是字节：载荷读不出来有四种原因（ADR-6 第七节），
+     * 而它们的处置完全不同 —— <b>过期是环形文件写满的预期结果，不是故障</b>
+     *（ADR-3 第 2 种），而字节解不出来才是故障。合成一个 {@code null} 就把两者
+     * 混成"载荷不可用"，用户会因此去查磁盘，而磁盘完全正常。
+     */
+    public enum PayloadState {
+        /** 读到了字节。 */
+        AVAILABLE,
+        /** 表头行在，但载荷没有：写入时被拒或编码失败（ADR-3 第 3 种）。 */
+        NO_PAYLOAD,
+        /** 已被环形文件覆盖 —— <b>过期是预期行为，不是故障</b>（ADR-3 第 2 种）。 */
+        EXPIRED,
+        /** 这一行不存在：被行数水位淘汰了，或 id 写错了。 */
+        MISSING
+    }
+
+    /** 载荷查询的结果：状态 + 字节（只有 {@link PayloadState#AVAILABLE} 时非 null）。 */
+    public static final class PayloadResult {
+        private final PayloadState state;
+        private final byte[] bytes;
+
+        private PayloadResult(final PayloadState state, final byte[] bytes) {
+            this.state = state;
+            this.bytes = bytes;
+        }
+
+        public PayloadState getState() {
+            return state;
+        }
+
+        public byte[] getBytes() {
+            return bytes;
+        }
+
+        public boolean isAvailable() {
+            return state == PayloadState.AVAILABLE;
+        }
+    }
+
+    /**
+     * "读不到"的兜底结果。
+     *
+     * <p>做成工厂而不是开放构造器：{@code readout} 在另一个包，它需要这个兜底，
+     * 但它不该能凭空造出 {@code AVAILABLE}。
+     */
+    public static PayloadResult unreadable() {
+        return new PayloadResult(PayloadState.NO_PAYLOAD, null);
+    }
+
+    /**
+     * 按行 id 读回 span 的载荷，并说清它是"没有"、"过期了"还是"行不存在"。
      *
      * <p>{@code payload_id} 走 {@code wasNull()} 判定 —— 这是 ADR-2 第 1 条坑：
      * 载荷被拒写时这一列是 NULL，而 {@code 0} 恰好是合法的首个逻辑偏移。
      * 用 {@code getLong()} 的返回值判空会把"没有载荷"误报成"指向环里最老那块"，
      * 读回来的是一条**别人的**记录，且没有任何报错。
-     *
-     * @return 载荷字节；没有载荷或已被环覆盖时为 {@code null}（后者是<b>过期</b>，预期行为）
      */
-    public byte[] spanPayload(final long spanId) throws SQLException {
+    public PayloadResult spanPayloadOf(final long spanId) throws SQLException {
         final long blockId;
+        final boolean hasRow;
         synchronized (lock) {
             final PreparedStatement ps = conn.prepareStatement("SELECT payload_id FROM span WHERE id = ?");
             try {
                 ps.setLong(1, spanId);
                 final ResultSet rs = ps.executeQuery();
                 try {
-                    if (!rs.next()) {
-                        return null;
-                    }
-                    blockId = rs.getLong(1);
-                    if (rs.wasNull()) {
-                        return null;
+                    hasRow = rs.next();
+                    blockId = hasRow ? rs.getLong(1) : -1L;
+                    if (hasRow && rs.wasNull()) {
+                        return new PayloadResult(PayloadState.NO_PAYLOAD, null);
                     }
                 } finally {
                     rs.close();
@@ -587,24 +636,25 @@ public final class LocalStore implements AutoCloseable {
                 ps.close();
             }
         }
-        return traceRing.read(blockId);
+        return hasRow ? resultOf(traceRing.read(blockId))
+                : new PayloadResult(PayloadState.MISSING, null);
     }
 
-    /** 按行 id 读回日志记录的载荷；{@code payload_id} 的 NULL 判定同 {@link #spanPayload(long)}。 */
-    public byte[] logPayload(final long logId) throws SQLException {
+    /** 按行 id 读回日志记录的载荷，状态语义同 {@link #spanPayloadOf(long)}。 */
+    public PayloadResult logPayloadOf(final long logId) throws SQLException {
         final long blockId;
+        final boolean hasRow;
         synchronized (lock) {
-            final PreparedStatement ps = conn.prepareStatement("SELECT payload_id FROM log_record WHERE id = ?");
+            final PreparedStatement ps = conn.prepareStatement(
+                    "SELECT payload_id FROM log_record WHERE id = ?");
             try {
                 ps.setLong(1, logId);
                 final ResultSet rs = ps.executeQuery();
                 try {
-                    if (!rs.next()) {
-                        return null;
-                    }
-                    blockId = rs.getLong(1);
-                    if (rs.wasNull()) {
-                        return null;
+                    hasRow = rs.next();
+                    blockId = hasRow ? rs.getLong(1) : -1L;
+                    if (hasRow && rs.wasNull()) {
+                        return new PayloadResult(PayloadState.NO_PAYLOAD, null);
                     }
                 } finally {
                     rs.close();
@@ -613,7 +663,77 @@ public final class LocalStore implements AutoCloseable {
                 ps.close();
             }
         }
-        return logRing.read(blockId);
+        return hasRow ? resultOf(logRing.read(blockId))
+                : new PayloadResult(PayloadState.MISSING, null);
+    }
+
+    /** 把环的读结果折成状态之一 —— 唯一的映射点，别在别处再写一遍。 */
+    private static PayloadResult resultOf(final PayloadRing.Read read) {
+        if (read.bytes() != null) {
+            return new PayloadResult(PayloadState.AVAILABLE, read.bytes());
+        }
+        return new PayloadResult(read.overwritten() ? PayloadState.EXPIRED : PayloadState.NO_PAYLOAD,
+                null);
+    }
+
+    /** 详情页比列表多两列：状态描述与观测时间戳。 */
+    private static final String[] SPAN_HEADER_COLUMNS = {
+            "id", "traceId", "spanId", "parentSpanId", "name", "kind", "startTime", "endTime",
+            "statusCode", "statusMessage", "scopeName", "scopeVersion", "resourceId",
+            "attrCount", "eventCount", "payloadId"};
+
+    private static final String[] LOG_HEADER_COLUMNS = {
+            "id", "traceId", "spanId", "severityNumber", "severityText", "timestamp",
+            "observedTimestamp", "bodyPreview", "scopeName", "scopeVersion", "resourceId",
+            "attrCount", "payloadId"};
+
+    /** 按行 id 取一条 span 的全部表头列（详情页用）。不存在时返回 {@code null}。 */
+    public Map<String, Object> spanHeader(final long spanId) throws SQLException {
+        return oneRow("SELECT id, trace_id, span_id, parent_span_id, name, kind, start_time, end_time,"
+                + " status_code, status_message, scope_name, scope_version, resource_id, attr_count,"
+                + " event_count, payload_id FROM span WHERE id = ?", spanId, SPAN_HEADER_COLUMNS);
+    }
+
+    /** 按行 id 取一条日志记录的全部表头列（详情页用）。 */
+    public Map<String, Object> logHeader(final long logId) throws SQLException {
+        return oneRow("SELECT id, trace_id, span_id, severity_number, severity_text, timestamp,"
+                + " observed_timestamp, body_preview, scope_name, scope_version, resource_id,"
+                + " attr_count, payload_id FROM log_record WHERE id = ?", logId, LOG_HEADER_COLUMNS);
+    }
+
+    private Map<String, Object> oneRow(final String sql, final long id, final String[] columns)
+            throws SQLException {
+        synchronized (lock) {
+            final PreparedStatement ps = conn.prepareStatement(sql);
+            try {
+                ps.setLong(1, id);
+                final List<Map<String, Object>> rows = read(ps, columns);
+                return rows.isEmpty() ? null : rows.get(0);
+            } finally {
+                ps.close();
+            }
+        }
+    }
+
+    /**
+     * 按行 id 读回 span 的载荷。
+     *
+     * @deprecated 想知道"为什么读不到"就用 {@link #spanPayloadOf(long)} ——
+     *             它区分了过期 / 没有 / 行不存在，而这三种的处置完全不同（ADR-6 第七节）
+     */
+    @Deprecated
+    public byte[] spanPayload(final long spanId) throws SQLException {
+        return spanPayloadOf(spanId).getBytes();
+    }
+
+    /**
+     * 按行 id 读回日志记录的载荷。
+     *
+     * @deprecated 同 {@link #spanPayload(long)}，用 {@link #logPayloadOf(long)}
+     */
+    @Deprecated
+    public byte[] logPayload(final long logId) throws SQLException {
+        return logPayloadOf(logId).getBytes();
     }
 
     /** 读一份 Resource 的规范化文本（字典表那一列的原文）。 */

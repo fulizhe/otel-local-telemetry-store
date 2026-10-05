@@ -256,6 +256,70 @@ public final class ReadoutQueries {
     }
 
     /**
+     * 一条 span 的表头行（详情页用，比列表多状态描述）。
+     *
+     * @return 那一行；行不存在（被水位淘汰 / id 写错）时为 {@code null}
+     */
+    public Map<String, Object> spanHeader(final long spanId) {
+        if (store == null) {
+            return null;
+        }
+        try {
+            return store.spanHeader(spanId);
+        } catch (final Exception e) {
+            ThrottledLogger.warn("readout-span-header", "读 span 表头失败 id=" + spanId, e);
+            return null;
+        }
+    }
+
+    /** 一条日志记录的表头行（详情页用，比列表多观测时间戳）。 */
+    public Map<String, Object> logHeader(final long logId) {
+        if (store == null) {
+            return null;
+        }
+        try {
+            return store.logHeader(logId);
+        } catch (final Exception e) {
+            ThrottledLogger.warn("readout-log-header", "读日志表头失败 id=" + logId, e);
+            return null;
+        }
+    }
+
+    /**
+     * 一条 span 的载荷<b>及其状态</b>。
+     *
+     * <p>状态是这一页的关键：载荷读不出来有四种原因，而"过期"是环形文件写满的**预期结果**、
+     * 不是故障（ADR-3 第 2 种、ADR-6 第七节）。合并成一个 null 会让用户去查磁盘，
+     * 而磁盘完全正常。
+     *
+     * @return 没有存储层时为 {@code null} —— 用它区分"没数据"与"读不了"
+     */
+    public LocalStore.PayloadResult spanPayloadOf(final long spanId) {
+        if (store == null) {
+            return null;
+        }
+        try {
+            return store.spanPayloadOf(spanId);
+        } catch (final Exception e) {
+            ThrottledLogger.warn("readout-span-payload", "读 span 载荷失败 id=" + spanId, e);
+            return LocalStore.unreadable();
+        }
+    }
+
+    /** 一条日志记录的载荷及其状态。 */
+    public LocalStore.PayloadResult logPayloadOf(final long logId) {
+        if (store == null) {
+            return null;
+        }
+        try {
+            return store.logPayloadOf(logId);
+        } catch (final Exception e) {
+            ThrottledLogger.warn("readout-log-payload", "读日志载荷失败 id=" + logId, e);
+            return LocalStore.unreadable();
+        }
+    }
+
+    /**
      * 把行里的 {@code resourceId} 展开成那一份 Resource 的规范化文本，按 id 归并。
      *
      * <p>不展开的话读口只能给一串外键数字，排障时还得自己去查字典表 ——

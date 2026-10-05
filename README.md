@@ -131,11 +131,21 @@ java -javaagent:opentelemetry-javaagent.jar \
 | `/api/traces?limit=&traceId=` | span 表头行（**不含载荷**），按 id 倒序；给了 `traceId` 则按开始时间排 |
 | `/api/logs?limit=&traceId=` | 日志表头行，同上 |
 | `/api/metrics?name=&limit=` | 指标点的**时间序列**（给了 `name` 则只看那个指标；不给就是最近若干个）。`detail` 结构化返回：桶边界、各桶计数、分位点 |
+| `/api/traces/{id}` `/api/logs/{id}` | 单条详情：表头 + 载荷状态 + **解码后的** attributes / events / status。`{id}` 必须是纯数字 |
 | `/metrics` | Prometheus 文本（每个指标每个属性组合的**当前值**） |
 | `/api/self` `/api/self-log` | 随 Phase 5 后续两段落地 |
 
 `limit` 默认 20、上限 200（`/metrics` 不限，它按序列给）。
 **没有数据返回 200 + 空数组**，只有参数非法才 4xx —— 「没有数据」与「请求写错了」必须能分开。
+
+**载荷可能读不出来，而四种原因的处置完全不同**（详情页的 `payload.reason` 会说清是哪一种）：
+
+| `reason` | 含义 | 是故障吗 |
+| --- | --- | --- |
+| `expired` | 已被环形文件覆盖 | **否** —— 容量到顶的预期行为，调大 `capped.*.bytes` 可留住更久 |
+| `no_payload` | 写入时超了 `max.payload.bytes` 或编码失败 | 看规律；表头行仍在库里，查询不受影响 |
+| `corrupt` | 字节读到了但解不出 OTLP 结构 | **是** |
+| 404 | 这一行不存在（被行数水位淘汰，或 id 写错） | 通常是 id 写错 |
 
 ```bash
 curl.exe http://host:17890/api/summary

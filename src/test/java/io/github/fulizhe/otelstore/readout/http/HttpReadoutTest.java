@@ -372,6 +372,163 @@ class HttpReadoutTest {
         return out;
     }
 
+    /** 一条带**真实 OTLP protobuf 载荷**的 span —— 详情页要解的就是它。 */
+    private static SpanRecord spanWithOtlpPayload(final String name, final String traceId) {
+        final io.opentelemetry.proto.trace.v1.Span otlp =
+                io.opentelemetry.proto.trace.v1.Span.newBuilder()
+                                        .setTraceId(bytes(traceId))
+                        .setSpanId(bytes("0123456789abcdef"))
+                        .setName(name)
+                        .addAttributes(io.opentelemetry.proto.common.v1.KeyValue.newBuilder()
+                                .setKey("http.method")
+                                .setValue(io.opentelemetry.proto.common.v1.AnyValue.newBuilder()
+                                        .setStringValue("GET"))
+                                .build())
+                        .build();
+        return new SpanRecord(traceId, "0123456789abcdef", "", name, 2, 1L, 2L, 0, null,
+                "scope", "1.0", null, 1, 0, otlp.toByteArray());
+    }
+
+    private static byte[] hexToBytes(final String hex) {
+        final byte[] out = new byte[hex.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = (byte) ((Character.digit(hex.charAt(i * 2), 16) << 4)
+                    | Character.digit(hex.charAt(i * 2 + 1), 16));
+        }
+        return out;
+    }
+
+    private static com.google.protobuf.ByteString bytes(final String hex) {
+        return com.google.protobuf.ByteString.copyFrom(hexToBytes(hex));
+    }
+
+    @Test
+    @DisplayName("详情：表头 + 载荷状态 + 解码后的内容")
+    void detailExposesDecodedPayload(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir)) {
+            store.store(spanWithOtlpPayload("with-otlp", "11111111111111111111111111111111"));
+            try (HttpReadout readout = start(dataDir, 0, false, null, store)) {
+                final int port = readout.getActualPort();
+                final String id = String.valueOf(
+                        ((Number) store.recentSpans(1).get(0).get("id")).longValue());
+
+                final String body = get(port, "/api/traces/" + id).body;
+                assertTrue(body.contains("\"name\":\"with-otlp\""), body);
+                assertTrue(body.contains("\"payload\""), body);
+                assertTrue(body.contains("\"available\":true"), body);
+                assertTrue(body.contains("\"state\":\"AVAILABLE\""), body);
+                assertTrue(body.contains("\"decoded\""), "真实 OTLP 载荷必须能解出来：" + body);
+                assertTrue(body.contains("http.method"), "解出的属性要有键：" + body);
+                assertTrue(body.contains("\"type\":\"STRING_VALUE\""), "属性要带类型：" + body);
+                assertFalse(body.contains("\"raw\""), "载荷原文不该出现在详情里：" + body);
+            } finally {
+                store.close();
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("载荷读不出来时原因要分得开：corrupt / no_payload / expired 各说各的")
+    void payloadReasonsAreDistinguishable(@TempDir final File dataDir) throws Exception {
+        // 注意键要带 otel.localstore. 前缀 —— 漏了会被静默忽略成默认值
+        // （写默认值的后果：环是 256 MiB，永远绕不满圈，"expired"那条就测不到）
+        final Map<String, String> tiny = new LinkedHashMap<String, String>();
+        tiny.put(LocalStoreConfig.PREFIX + "dataDir", dataDir.getAbsolutePath());
+        tiny.put(LocalStoreConfig.PREFIX + "host", "127.0.0.1");
+        tiny.put(LocalStoreConfig.PREFIX + "capped.traces.bytes", "8192");
+        tiny.put(LocalStoreConfig.PREFIX + "capped.logs.bytes", "8192");
+        final LocalStoreConfig cfg = LocalStoreConfig.from(tiny);
+        assertEquals(8192L, cfg.getCappedTracesBytes(), "配置必须真的生效，否则这个用例测不到东西");
+        final java.util.Random rnd = new java.util.Random(7L);
+        final byte[] incompressible = new byte[512];
+        rnd.nextBytes(incompressible);
+
+        try (LocalStore store = new LocalStore(cfg)) {
+            // 顺序是关键：**先写要过期的，再写填充把环绕满，最后才写那两个"当下可读"的**。
+            // 反过来写的话，corrupt 那行的块也会被填充块覆盖 —— 它就变成 expired，
+            // 三种状态就不可能同时出现在一次快照里（这正是"过期会盖掉一切"的真实表现）。
+            store.store(spanWithOtlpPayload("will-expire", "00000000000000000000000000000001"));
+            for (int i = 0; i < 60; i++) {
+                store.store(new SpanRecord("000000000000000000000000000000" + (10 + i),
+                        "0123456789abcdef", "", "filler-" + i, 2, 1L, 2L, 0, null, "scope", "1.0",
+                        null, 0, 0, incompressible));
+            }
+            store.store(new SpanRecord("00000000000000000000000000000002", "0123456789abcdef", "",
+                    "no-payload", 2, 1L, 2L, 0, null, "scope", "1.0", null, 0, 0, null));
+            store.store(new SpanRecord("00000000000000000000000000000003", "0123456789abcdef", "",
+                    "corrupt-payload", 2, 1L, 2L, 0, null, "scope", "1.0", null, 0, 0,
+                    "这不是 OTLP protobuf".getBytes(UTF8)));
+
+            // 先确认环真的绕圈了 —— 否则下面那条 expired 断言测的是"根本没覆盖"
+            final Map<String, Object> ring = (Map<String, Object>) store.snapshot().get("traceRing");
+            assertTrue(((Number) ring.get("wrapCount")).longValue() > 0L,
+                    "环必须已经绕圈才能测出 expired，实际：" + ring);
+
+            try (HttpReadout readout = HttpReadout.start(cfg, new ReadoutQueries(cfg, store, null),
+                    dataDir)) {
+                final int port = readout.getActualPort();
+                // 按 name 找 id，不硬编码 —— 填充块占了 2..61，硬编码的 id 一定会随写入顺序碎掉
+                final String noPayload = get(port, "/api/traces/" + idOf(store, "no-payload")).body;
+                assertTrue(noPayload.contains("\"reason\":\"no_payload\""), noPayload);
+                assertTrue(noPayload.contains("max.payload.bytes"), "要说清为什么没有载荷：" + noPayload);
+
+                final String corrupt = get(port, "/api/traces/" + idOf(store, "corrupt-payload")).body;
+                assertTrue(corrupt.contains("\"reason\":\"corrupt\""),
+                        "字节在但解不出来 = 故障，与过期必须分开：" + corrupt + " ring=" + ring);
+                assertTrue(corrupt.contains("\"state\":\"AVAILABLE\""),
+                        "字节确实读到了，只是解不开：" + corrupt);
+
+                final String expired = get(port, "/api/traces/" + idOf(store, "will-expire")).body;
+                assertTrue(expired.contains("\"reason\":\"expired\""), expired);
+                assertTrue(expired.contains("这不是故障"),
+                        "过期必须说清它不是故障，否则用户会去查磁盘：" + expired);
+
+                assertTrue(get(port, "/api/traces/99999").body.contains("\"error\":\"not_found\""),
+                        "行不存在是 404，与载荷读不到是两件事");
+            }
+        }
+    }
+
+    /** 按 span 名找它的行 id。 */
+    private static long idOf(final LocalStore store, final String name) throws Exception {
+        for (final Map<String, Object> row : store.recentSpans(500)) {
+            if (name.equals(row.get("name"))) {
+                return ((Number) row.get("id")).longValue();
+            }
+        }
+        throw new AssertionError("库里没有名为 " + name + " 的 span");
+    }
+
+    @Test
+    @DisplayName("详情端点的 id 只接受纯数字；多段与穿越式路径一律 400")
+    void detailIdMustBePureDigits(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final int port = readout.getActualPort();
+            // 只做前缀匹配、不做多段 → 整串被当 id 解析 → 非数字 → 400。没有路径穿越的口子
+            for (final String bad : new String[]{"abc", "1/2", "../x", "1.0", "-1", " 1",
+                    "99999999999999999999", "%2e%2e%2f"}) {
+                final Response r = get(port, "/api/traces/" + bad);
+                assertEquals(400, r.status, "/api/traces/" + bad + " 应当被拒");
+                assertTrue(r.body.contains("\"error\":\"bad_request\""), r.body);
+            }
+            assertEquals(200, get(port, "/api/traces/1").status, "合法 id 可用");
+        }
+    }
+
+    @Test
+    @DisplayName("详情端点也受鉴权保护")
+    void detailIsGuarded(@TempDir final File dataDir) throws Exception {
+        final String token = "detail-token";
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, true, token, store)) {
+            final int port = readout.getActualPort();
+            assertEquals(401, get(port, "/api/traces/1").status);
+            assertEquals(401, get(port, "/api/traces/1", "wrong").status);
+            assertEquals(200, get(port, "/api/traces/1", token).status);
+        }
+    }
+
     @Test
     @DisplayName("按 traceId 取回该 trace 的全部 span，按开始时间排")
     void spansOfOneTraceComeBack(@TempDir final File dataDir) throws Exception {

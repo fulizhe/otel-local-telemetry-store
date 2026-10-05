@@ -167,7 +167,17 @@ pwsh -NoProfile -File scripts/run-with-agent.ps1            # 端到端，长驻
 - **`Stop-Process` 是强杀，不触发 shutdown hook。** 见第一节。
 - **跑着的 java 进程会锁住 `target` 里的 jar**，`mvn clean` 因此失败
   （`Failed to delete …-shaded.jar`）。先停进程再 clean。
-- **`RandomAccessFile.writeLong` 是大端。** 想直接读环文件的 `currIndex` 自查，
+- **测试里的配置 map 漏写 `otel.localstore.` 前缀会静默生效为默认值。**
+  `LocalStoreConfig` 按设计"解析永不失败"（ADR-1），所以漏前缀**不报错**，
+  只会让 `dataDir` 落回 `./otel-local-telemetry-store` —— 于是测试在**仓库根目录**建出
+  两个 256 MiB 的环文件。本项目因此踩了两次（`LocalStoreCustomizerProviderTest` 与
+  `ReadoutQueriesTest` 各一次），两次都是"单独跑那个测试类看不出来，全量跑才发现"。
+  `ReadoutQueriesTest` 里现在有一条 `configKeysNeedThePrefix` 专门钉这个陷阱。
+- **改 Java 文件不要用 PowerShell 的行号切片**（`$l[406..440]` 那种）。
+  本会话里它把 `HttpReadout.java` 的内部类结构、`LocalStore.java` 的方法头、
+  `errorBody` 的方法体依次弄坏过三次，每次都要靠编译错误反推。
+  **只用精确替换**（`edit` 工具或整段 `.Replace()`），或者改完立刻 `mvn -q compile`。
+- **RandomAccessFile.writeLong 是大端**。想直接读环文件的 `currIndex` 自查，
   用 `BitConverter` 解出来是错的（会得到天文数字）；要么按大端解，要么干脆别解 ——
   那 16B 文件头的语义见 `CappedFileStorage` 的类注释。
 - **端口 18080 被本机另一个项目占着**（RuoYi-Flowable-Plus）。`demo-app` 因此用 **18081**。

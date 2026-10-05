@@ -166,8 +166,8 @@ class ReadoutQueriesTest {
     @DisplayName("配置里绝不含 token 明文")
     void configNeverLeaksToken(@TempDir final File dataDir) throws Exception {
         final Map<String, String> p = new LinkedHashMap<String, String>();
-        p.put("dataDir", dataDir.getAbsolutePath());
-        p.put("token", "super-secret-token-value");
+        p.put(LocalStoreConfig.PREFIX + "dataDir", dataDir.getAbsolutePath());
+        p.put(LocalStoreConfig.PREFIX + "token", "super-secret-token-value");
         final LocalStoreConfig cfg = LocalStoreConfig.from(p);
         try (LocalStore store = new LocalStore(cfg)) {
             final ReadoutQueries q = new ReadoutQueries(cfg, store, null);
@@ -190,6 +190,22 @@ class ReadoutQueriesTest {
             assertEquals(-1, q.spanPayload(999999L) == null ? -1 : 0,
                     "不存在的行返回 null 而不是抛异常");
         }
+    }
+
+        @Test
+    @DisplayName("配置键必须带 otel.localstore. 前缀 —— 漏了会被静默忽略成默认值")
+    void configKeysNeedThePrefix() {
+        // 这条不是配置功能的测试，是**陷阱**的测试。
+        // LocalStoreConfig 按设计"解析永不失败"（ADR-1），所以漏写前缀不会报错、
+        // 只会静默回落默认值 —— 本项目已经因此两次让测试把 256 MiB 的环文件
+        // 建在了仓库根目录（写默认 dataDir 的那两处）。
+        final Map<String, String> noPrefix = new LinkedHashMap<String, String>();
+        noPrefix.put("dataDir", "/tmp/should-be-ignored");
+        noPrefix.put("auth", "true");
+        final LocalStoreConfig c = LocalStoreConfig.from(noPrefix);
+
+        assertEquals(LocalStoreConfig.DEFAULT_DATA_DIR, c.getDataDir(), "没前缀 = 没配");
+        assertEquals(LocalStoreConfig.DEFAULT_AUTH_ENABLED, c.isAuthEnabled());
     }
 
     private static java.util.function.Supplier<Map<String, Object>> constant(final Map<String, Object> value) {
