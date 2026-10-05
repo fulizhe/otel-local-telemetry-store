@@ -10,7 +10,7 @@
 
 - traces / logs / metrics 三个信号，单 JVM、单体应用优先
 - 硬预算：traces 与 logs 各一个堆外定长环形文件（`capped.traces.bytes` / `capped.logs.bytes`），H2 侧各有一张表头表 + 行数水位（`rows.traces` / `rows.logs`）；metrics 走时间序列形态，不进环形文件，但 H2 侧**同样有行数水位**（`rows.metrics`）
-- 读口：JMX（跨 ClassLoader 的主通道）+ HTTP（含 Prometheus 文本端点）；默认开启、默认绑 `0.0.0.0`、token 鉴权、只注册 GET/HEAD
+- 读口：JMX（跨 ClassLoader 的主通道）+ HTTP（含 Prometheus 文本端点）；默认开启、默认绑 `0.0.0.0`、**默认不要求 token**（要 token 得显式 `auth=true`）、只注册 GET/HEAD
 - 端口先试配置值，`BindException` 则退到随机端口并报出实际值，**绝不让端口冲突变成启动失败**
 
 **不做**
@@ -51,7 +51,17 @@
 - **logs 的业务线程风险比预想的小，但没消失**：SDK 1.66 有 `BatchLogRecordProcessor`（autoconfigure 默认就装），所以 `onEmit` 只是入队。但我们自己的入队**仍不能阻塞** —— 队列满就丢并计数，不能 inline 压缩或写文件。
 - 有界预算从"一个总数"变成"**每信号一个独立上限**"。好处是可控、可解释；代价是要用户分别调 —— traces 与 logs 各有两个旋钮（`capped.*.bytes` 管载荷、`rows.*` 管表头），metrics 一个（`rows.metrics`），文档必须写清总占用怎么估算。
 - `rows.metrics` 默认与 `rows.traces` / `rows.logs` 同档（200000）。**这是"未实测前不猜"的占位值，不是结论**：指标行确实更轻，等有了真实负载下"每行多大、增长多快"的数字再改 —— 与 `queue.capacity` 三个信号暂用同一容量是同一条理由。
-- 读口默认对内网开放。即便有 token，这也**扩大了攻击面**：trace 与 log 的载荷里装着 SQL 语句、HTTP header、请求体、日志原文。因此 token 必须每进程随机，且绝不出现在任何日志 / 快照 / 异常消息里（`LocalStoreConfig.describe()` 已按此实现）。
+- **读口默认对内网开放，且默认不要求 token**（2026-10-04 改，与初版相反）。
+  两者相加的后果必须说清：**默认状态下，同一网络内的任何机器都能读走全部 trace 与日志载荷** ——
+  里面装着 SQL 语句、HTTP header（含 `Authorization` 与 `Cookie`）、请求体、日志原文。
+  改成默认无 token 的理由是：这个扩展的定位是"挂在**本机**应用里自查"，
+  默认要 token 会给最常见的用法（本地起进程、浏览器看一眼）加一道
+  "去文件里复制 token 粘进页面"的工序，而那道工序挡不住真实威胁 ——
+  真要读你数据的人通常已经有进程内权限了。
+  **代价**：安全姿态从"默认安全"变成"默认方便"，所以配了 `auth=true` 时
+  token 必须每进程随机、且绝不出现在任何日志 / 快照 / 异常消息（`LocalStoreConfig.describe()` 已按此实现），
+  且**无鉴权且绑非回环地址时必须在启动日志里显著警告**（见 adr-06 第四节）。
+  想让默认就安全，把 `host` 默认改成 `127.0.0.1` 即可 —— 那是另一条独立决策。
 - demo-app 不再像 SW 侧那样托管读口 —— 读口在扩展内部，与应用隔着三个 ClassLoader。它退化为"造信号 + 给出可断言的期望值"的靶子。
 - **扩展会每 60 秒往应用的日志里写一行 INFO 汇总**（队列计数 + 库内行数）。
   这是**本扩展唯一默认的、周期性的日志输出**，必须写进部署文档：不想看就调低应用日志级别

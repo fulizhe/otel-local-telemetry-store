@@ -108,8 +108,13 @@ io.github.fulizhe.otelstore
 ## 读口的安全姿态
 
 - 默认开启、默认绑定 `0.0.0.0`（可远程访问）、**结构性只读**（只注册 GET/HEAD，不提供 raw SQL）。
-- 默认要求访问 token：进程启动时随机生成，写入 `*.token` 文件与启动日志。
+- **默认不要求 token**（要 token 需显式 `otel.localstore.auth=true`）。这是一条**安全姿态**决定：
+  默认 `0.0.0.0` + 默认无鉴权 = 同一网络内任何机器都能读走全部载荷（SQL、HTTP header、请求体、日志原文）。
+  改动它必须同时改 [ADR-1](docs/adr/adr-01-scope-and-principles.md) 与
+  [ADR-6](docs/adr/adr-06-readout-http-surface.md)，不能只改默认值。
+- 配了 `auth=true` 时：token 进程启动时随机生成，写入 `*.token` 文件与启动日志；
   **token 绝不能出现在任何日志、快照或异常消息里** —— 配 `describe()` 时注意。
+  页面用「粘贴 token + sessionStorage」拿它，**不进 URL、不进 cookie**。
 - 在客户应用里开端口是安全决策，不是顺手的事。改绑定地址或鉴权策略要写进 ADR。
 
 ## 验证节奏

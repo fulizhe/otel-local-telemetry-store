@@ -29,7 +29,10 @@ class LocalStoreConfigTest {
         for (final LocalStoreConfig c : new LocalStoreConfig[]{a, b}) {
             assertEquals(LocalStoreConfig.DEFAULT_HOST, c.getHost());
             assertEquals(LocalStoreConfig.DEFAULT_PORT, c.getPort());
-            assertTrue(c.isAuthEnabled());
+            // 默认不要 token（2026-10-04 决定，与初版相反）：本地自查不该被一道
+            // "去文件里复制 token"挡住。这条断言写死，是为了将来有人"顺手"把它改回 true 时
+            // 必须同时意识到那是**安全姿态的变更**，而不只是改个默认值。
+            assertFalse(c.isAuthEnabled());
             assertNull(c.getToken());
             assertEquals(LocalStoreConfig.DEFAULT_DATA_DIR, c.getDataDir());
             assertEquals(LocalStoreConfig.DEFAULT_CAPPED_TRACES_BYTES, c.getCappedTracesBytes());
@@ -46,7 +49,7 @@ class LocalStoreConfigTest {
         final LocalStoreConfig c = LocalStoreConfig.from(props(
                 "host", " 127.0.0.1 ",
                 "port", "19999",
-                "auth", "false",
+                "auth", "true",
                 "token", "s3cret",
                 "dataDir", "/var/lib/store",
                 "capped.traces.bytes", "1048576",
@@ -57,7 +60,7 @@ class LocalStoreConfigTest {
 
         assertEquals("127.0.0.1", c.getHost());
         assertEquals(19999, c.getPort());
-        assertFalse(c.isAuthEnabled());
+        assertTrue(c.isAuthEnabled());
         assertEquals("s3cret", c.getToken());
         assertEquals("/var/lib/store", c.getDataDir());
         assertEquals(1048576L, c.getCappedTracesBytes());
@@ -81,7 +84,8 @@ class LocalStoreConfigTest {
 
         assertEquals(LocalStoreConfig.DEFAULT_HOST, c.getHost());
         assertEquals(LocalStoreConfig.DEFAULT_PORT, c.getPort());
-        assertTrue(c.isAuthEnabled());
+        // 非法值回落**新的**默认（不要 token），不是回落成 true
+        assertEquals(LocalStoreConfig.DEFAULT_AUTH_ENABLED, c.isAuthEnabled());
         assertEquals(LocalStoreConfig.DEFAULT_CAPPED_TRACES_BYTES, c.getCappedTracesBytes());
         assertEquals(LocalStoreConfig.DEFAULT_CAPPED_LOGS_BYTES, c.getCappedLogsBytes());
         assertEquals(LocalStoreConfig.DEFAULT_MAX_PAYLOAD_BYTES, c.getMaxPayloadBytes());

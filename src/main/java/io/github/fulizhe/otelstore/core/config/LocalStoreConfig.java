@@ -28,7 +28,22 @@ public final class LocalStoreConfig {
     public static final int DEFAULT_ROWS_TRACES = 200000;
     public static final int DEFAULT_ROWS_LOGS = 200000;
     public static final int DEFAULT_ROWS_METRICS = 200000;
-    public static final boolean DEFAULT_AUTH_ENABLED = true;
+
+    /**
+     * <b>默认不要 token</b>（2026-10-04 决定，与初版相反）。
+     *
+     * <p>理由是这个扩展的定位是"<b>挂在本机应用里自查</b>"：默认要 token 会让最常见的用法
+     * （本地起一个进程，浏览器看一眼）多出一道"去文件里复制 token 粘进页面"的工序，
+     * 而那道工序挡住的不是真实威胁 —— 真要读你数据的人已经有进程内权限了。
+     *
+     * <p><b>代价必须说清</b>：{@code host} 默认仍是 {@code 0.0.0.0}（ADR-1），
+     * 两者相加意味着<b>默认状态下，同一网络内的任何机器都能读走全部 trace 与日志载荷</b> ——
+     * 里面装着 SQL 语句、HTTP header（含 {@code Authorization} 与 {@code Cookie}）、请求体、日志原文。
+     * 因此配了 {@code auth=true} 时，token 仍必须每进程随机、且绝不进入任何日志 / 快照 / 异常消息。
+     *
+     * @see docs/adr/adr-06-readout-http-surface.md 第四节
+     */
+    public static final boolean DEFAULT_AUTH_ENABLED = false;
 
     /**
      * 每条信号各自的有界队列容量。

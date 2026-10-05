@@ -24,7 +24,7 @@ Phase 4b 落地后，数据已经真的存在进程里，但**只有一个别扭
 
 | 通道 | 端口 | 理由 |
 | --- | --- | --- |
-| **HTTP 读口** | **1 个** | 有 token 保护、只 GET/HEAD、冲突退随机 |
+| **HTTP 读口** | **1 个** | 默认无鉴权（要 token 需显式配）、只 GET/HEAD、冲突退随机 |
 | JMX | **0 个** | 走进程内平台 MBeanServer。**不开 JMX remote**（RMI/JMXMP）—— 远程 JMX 默认无鉴权，而读口里装着 trace 与日志载荷（SQL 语句、HTTP header、日志原文）；它还是应用的 JVM 参数，不该由我们替用户决定 |
 
 所以"开一个新端口"的只有 HTTP 那一个。JMX 保持零网络。
@@ -55,13 +55,32 @@ Phase 4b 落地后，数据已经真的存在进程里，但**只有一个别扭
   口径写在路径与参数名里，不让人去记"哪个表有什么列"，同时守住 ADR-1 的"不提供 raw SQL"。
 - `limit` 一律有上限（200 / 500）。读口是给"看一眼现在什么状态"的，不是导出数据的工具。
 
-### 四、鉴权：数据端点要 token，`/` 不要
+### 四、鉴权：**默认不要求 token**；要 token 时用请求头，不用 URL
 
-- `/api/*` 与 `/metrics` **全部**要求 token，放在 `X-Otel-Store-Token` 请求头里。
-- **`/`（静态页面）不需要 token** —— 它是个不含数据的空壳，数据由页面里的 JS 带头去取。
-  这样 token **不进 URL**：query 参数会进浏览器历史与 access log。
-- Prometheus 侧对应 `authorization.credentials_file`，用 header 即可。
-- token 仍按 ADR-1 每进程随机、写 `<dataDir>/*.token` 与启动日志，**绝不进入任何响应体、日志或异常消息**。
+**默认无 token**（2026-10-04 决定，与初版相反，初版是"数据端点一律要 token"）。
+理由与后果写在 [adr-01](adr-01-scope-and-principles.md) 的 Consequences 里，一句话版本：
+这个扩展的定位是"挂在**本机**应用里自查"，默认要 token 会给最常见的用法加一道
+"去文件里复制 token 粘进页面"的工序，而那道工序挡不住真实威胁。
+
+- `/api/*`、`/metrics`、`/` **一律不要求 token**（默认配置下）。
+- **`auth=true` 时才启用鉴权**，此时：
+  - `/api/*` 与 `/metrics` 要求 token，放在 `X-Otel-Store-Token` 请求头里 ——
+    **不用 query 参数**，它会进浏览器历史与 access log。
+  - token 仍按 adr-1 每进程随机、写 `<dataDir>/*.token` 与启动日志，
+    **绝不进入任何响应体、日志或异常消息**。
+  - Prometheus 侧对应 `authorization.credentials_file`。
+- **启用鉴权时，`/` 页面需要一个"粘贴 token"的输入框**，值存 `sessionStorage`
+  （关标签页即失效），由页面里的 JS 带上那个头。
+  这是唯一同时满足"token 不进 URL、不进 cookie、浏览器能自动刷新"的做法：
+  - URL 带 `?token=` → 落浏览器历史；
+  - `Set-Cookie` → token 进入之后每个请求，传播面扩大；
+  - 页面本身也要 token → 浏览器普通导航带不了 header，人根本打不开。
+  默认无 token 时这个输入框不显示。
+
+- **无鉴权且绑定地址不是回环时，必须在启动日志里打一条显著警告**：
+  说明任何人都能读全部载荷、以及配 `auth=true` 的方法。
+  默认 `host=0.0.0.0`（adr-1）意味着这条警告**默认就会打** ——
+  这是"默认方便"这个选择的必然成本，把它藏起来才是真的危险。
 
 ### 五、跨源：不解决，因为不需要
 
@@ -120,8 +139,8 @@ ADR-1 里悬着的"读口跨源取舍"到此关闭。
 
 ## Considered Options
 
-- **也开一个 JMX remote 端口方便远程监控**：拒绝。默认无鉴权，而载荷装着 SQL 与日志原文；
-  它还是应用的 JVM 参数。见第一节。
+- **也开一个 JMX remote 端口方便远程监控**：拒绝。无论 HTTP 还是 JMX，**默认都不要求 token**
+  （见第四节），而载荷装着 SQL 与日志原文；它还是应用的 JVM 参数。见第一节。
 - **端口配置允许填 0**：拒绝。用户没法预先开口子，而"能预先开口子"是自部署场景的刚需。
 - **开 CORS 让 demo-app 页面直接读**：拒绝。见第五节 —— 页面直接开读口那侧就不需要，
   而开 CORS 等于允许任意站点读你的 trace。
@@ -146,11 +165,11 @@ ADR-1 里悬着的"读口跨源取舍"到此关闭。
   不影响"有界"这个第一原则。
 - **页面不在 demo-app 里**：验收要另开一个标签页指向读口端口。
   这是"不开 CORS"的直接代价，写进使用文档。
-- **`X-Otel-Store-Token` 这套 header 方案意味着"从命令行 curl 读口"要自己带 header**：
-  `curl.exe -H "X-Otel-Store-Token: …" http://host:17890/api/summary`。
-  token 在 `<dataDir>/*.token` 里。
+- **配了 `auth=true` 时，"从命令行 curl 读口"要自己带 header**：
+      `curl.exe -H "X-Otel-Store-Token: …" http://host:17890/api/summary`，
+      token 在 `<dataDir>/*.token` 里。**默认无鉴权时 `curl.exe http://host:17890/api/summary` 直接就能读。**
 - **读口线程里会做 protobuf 解码**：单条最坏 1 MiB（`max.payload.bytes` 封顶），
   批量由 `limit` 封顶（200）。不设流式、不设分页游标 —— v1 的查询都是"看一眼"。
-- 实现顺序建议：端口与 token → `/api/summary` → `/metrics`（Prometheus）→ 列表端点 →
-  `readout/payload` 解码与 `/api/self` → `/api/self-log` → `/` 页面。
-  每一段都能独立验收，不必等全部写完。
+- 实现顺序建议：端口（含 `.port` 文件）→ `/api/summary` → `/metrics`（Prometheus）→ 列表端点 →
+      `readout/payload` 解码与 `/api/self` → `/api/self-log` → `/` 页面。
+      每一段都能独立验收，不必等全部写完。鉴权按第四节实现（**默认关**，因此不占前三段的时间）。

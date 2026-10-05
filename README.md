@@ -57,10 +57,13 @@
 `process.command_line`、`process.executable.path`、`process.pid`、`host.ip` 等**不入库** ——
 完整命令行里可能带 token 或口令，落库等于把密钥写进本地文件。白名单外的键将来走配置追加。
 
-**④ 读口默认开启、默认绑定 `0.0.0.0`、默认要求 token。**
-即便有 token 这仍**扩大了攻击面**：trace 与 log 的载荷里装着 SQL 语句、HTTP header、请求体、日志原文。
-token 每进程随机生成，写在 `*.token` 文件与启动日志里，**绝不出现在任何日志 / 快照 / 异常消息中**。
-需要真正无鉴权时显式配 `otel.localstore.auth=false`。
+**④ 读口默认开启、默认绑定 `0.0.0.0`、默认不要求 token。**
+⚠️ **默认状态下，同一网络内的任何机器都能读走全部 trace 与日志载荷** —— 里面装着 SQL 语句、
+HTTP header（含 `Authorization` 与 `Cookie`）、请求体、日志原文。
+这是"默认方便"换来的代价：挂在**本机**应用里自查时，一道"去文件里复制 token"只会碍事，
+挡不住真实威胁。需要鉴权就显式配 `otel.localstore.auth=true`，此时 token 每进程随机生成、
+写在 `*.token` 文件与启动日志里，**绝不出现在任何日志 / 快照 / 异常消息中**。
+想让默认就安全，把 `otel.localstore.host` 配成 `127.0.0.1`（只本机可读）。
 
 **⑤ agent 自监控指标不入库。**
 按 instrumentation scope 前缀黑名单过滤。它们回答的是"SDK 健康吗"，与业务数据混在一张库里
@@ -135,8 +138,8 @@ java -javaagent:opentelemetry-javaagent.jar \
 | --- | --- | --- |
 | `host` | `0.0.0.0` | 读口绑定地址，默认允许远程访问。**读口未做，暂不生效** |
 | `port` | `17890` | 读口端口；避开 OTLP 惯例的 4317 / 4318。**同上** |
-| `auth` | `true` | 是否要求访问 token。**同上** |
-| `token` | 进程启动时随机生成 | 写入 `*.token` 文件与启动日志。**同上** |
+| `auth` | `false` | 是否要求访问 token。默认**不要求** —— 见上面的 ④ |
+| `token` | 进程启动时随机生成 | 仅当 `auth=true` 时有意义 |
 | `dataDir` | `./otel-local-telemetry-store` | 数据目录 |
 | `capped.traces.bytes` | 256 MiB | traces 环形文件容量 |
 | `capped.logs.bytes` | 256 MiB | logs 环形文件容量 |
