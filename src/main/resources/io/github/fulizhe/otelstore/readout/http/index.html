@@ -164,7 +164,10 @@
           $('s-spans').textContent = num(store.spanRows);
           $('s-logs').textContent = num(store.logRows);
           $('s-metrics').textContent = num(store.metricRows);
-          $('s-resources').textContent = num(store.resources);
+          // 字典的计数是**嵌套**的一层（interned / reused / cachedHashes / collisions），
+          // 字典的**行数**就是 interned —— 之前直接把 store.resources 当数字渲染，
+          // 结果页面上出现 [object Object]。
+          $('s-resources').textContent = num((store.resources || {}).interned);
         }
 
         $('queues').innerHTML = ['traces', 'logs', 'metrics'].map(function (sig) {

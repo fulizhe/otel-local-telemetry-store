@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
@@ -90,6 +91,20 @@ class LocalStoreConfigTest {
         assertEquals(LocalStoreConfig.DEFAULT_CAPPED_LOGS_BYTES, c.getCappedLogsBytes());
         assertEquals(LocalStoreConfig.DEFAULT_MAX_PAYLOAD_BYTES, c.getMaxPayloadBytes());
         assertEquals(LocalStoreConfig.DEFAULT_ROWS_TRACES, c.getRowsTraces());
+    }
+
+    @Test
+    @DisplayName("对外呈现的 dataDir 一律是绝对路径（相对路径在别人屏幕上没有意义）")
+    void presentedDataDirIsAbsolute() {
+        final LocalStoreConfig relative = LocalStoreConfig.from(props("dataDir", "./otel-local-telemetry-store"));
+        assertEquals("./otel-local-telemetry-store", relative.getDataDir(),
+                "配置对象里保留用户给的原值");
+        assertTrue(new File(relative.getDataDirAbsolute()).isAbsolute(),
+                "但对外呈现的必须是绝对路径，实际：" + relative.getDataDirAbsolute());
+        assertEquals(relative.getDataDirAbsolute(), relative.describe().get("dataDir"),
+                "describe() 是读口与日志看到的那一份，必须已是绝对路径");
+        assertTrue(relative.getDataDirAbsolute().endsWith("otel-local-telemetry-store"),
+                "绝对路径仍要指向同一个目录，实际：" + relative.getDataDirAbsolute());
     }
 
     @Test

@@ -1,5 +1,6 @@
 package io.github.fulizhe.otelstore.core.config;
 
+import java.io.File;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -183,8 +184,22 @@ public final class LocalStoreConfig {
         return token;
     }
 
+    /** 数据目录。相对路径原样保留在配置里，但对外呈现一律用 {@link #getDataDirAbsolute()}。 */
     public String getDataDir() {
         return dataDir;
+    }
+
+    /**
+     * 数据目录的<b>绝对</b>路径。
+     *
+     * <p>为什么读口页面、启动日志、周期汇总都用它而不是配置里的原值：
+     * 相对路径在别人的屏幕上是没有意义的 —— 它相对于**谁的**工作目录？
+     * 而"文件在哪"恰恰是排障时要的第一件事。
+     *
+     * <p>它只做字符串层面的解析（不碰文件系统），所以配置层不会因为"目录还不存在"而失败。
+     */
+    public String getDataDirAbsolute() {
+        return new File(dataDir).getAbsolutePath();
     }
 
     public long getCappedTracesBytes() {
@@ -229,7 +244,7 @@ public int getRowsLogs() {
         m.put("port", Integer.valueOf(port));
         m.put("auth", Boolean.valueOf(authEnabled));
         m.put("token", token == null ? "<generated-at-startup>" : MASKED_TOKEN);
-        m.put("dataDir", dataDir);
+        m.put("dataDir", getDataDirAbsolute());
         m.put("cappedTracesBytes", Long.valueOf(cappedTracesBytes));
         m.put("cappedLogsBytes", Long.valueOf(cappedLogsBytes));
         m.put("maxPayloadBytes", Long.valueOf(maxPayloadBytes));

@@ -264,6 +264,69 @@ class HttpReadoutTest {
     }
 
     @Test
+    @DisplayName("页面对嵌套的字段取深层路径，不把对象直接渲染成 [object Object]")
+    void pageReadsNestedValuesInsteadOfStringifyingObjects(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final String page = get(readout.getActualPort(), "/").body;
+            // store.resources 是嵌套的一层（interned/reused/cachedHashes/collisions），
+            // 字典行数就是 interned。直接渲染 store.resources 会得到 [object Object]。
+            assertTrue(page.contains("(store.resources || {}).interned"),
+                    "页面必须取深层字段，不能直接渲染对象：" + page);
+            assertFalse(page.contains("num(store.resources)"), "那正是会渲染成 [object Object] 的写法");
+        }
+    }
+
+    @Test
+    @DisplayName("对外呈现的 dataDir 是绝对路径")
+    void summaryShowsAbsoluteDataDir(@TempDir final File dataDir) throws Exception {
+        final Map<String, String> p = new LinkedHashMap<String, String>();
+        p.put(LocalStoreConfig.PREFIX + "host", "127.0.0.1");
+        p.put(LocalStoreConfig.PREFIX + "capped.traces.bytes", "1048576");
+        p.put(LocalStoreConfig.PREFIX + "capped.logs.bytes", "1048576");
+        // 故意给一个相对路径：读口页面与日志里出现 "./xxx" 时人无法判断它相对于谁
+        p.put(LocalStoreConfig.PREFIX + "dataDir", "./relative-store-probe");
+        final LocalStoreConfig relative = LocalStoreConfig.from(p);
+        // 这个目录会真的被建出来（存储层要往里写环文件），所以测完必须删 ——
+        // 否则每次跑测试都在仓库根目录留一份垃圾。
+        final File litter = new File(relative.getDataDirAbsolute());
+        try (LocalStore store = new LocalStore(relative);
+             HttpReadout readout = HttpReadout.start(relative,
+                     new ReadoutQueries(relative, store, null), litter)) {
+            final String body = get(readout.getActualPort(), "/api/summary").body;
+            final String value = jsonString(body, "dataDir");
+            assertNotNull(value, "响应里要有 dataDir：" + body);
+            assertTrue(new File(value).isAbsolute(),
+                    "dataDir 必须是绝对路径，实际：" + value);
+            assertTrue(value.endsWith("relative-store-probe"),
+                    "指向的仍是同一个目录：" + value);
+        } finally {
+            deleteRecursively(litter);
+        }
+    }
+
+    /** 从 JSON 里取一个字符串字段的值（剥掉引号）。 */
+    private static String jsonString(final String json, final String key) {
+        final String needle = "\"" + key + "\":\"";
+        final int i = json.indexOf(needle);
+        if (i < 0) {
+            return null;
+        }
+        final int from = i + needle.length();
+        return json.substring(from, json.indexOf('"', from));
+    }
+
+    private static void deleteRecursively(final File file) {
+        final File[] children = file.listFiles();
+        if (children != null) {
+            for (int i = 0; i < children.length; i++) {
+                deleteRecursively(children[i]);
+            }
+        }
+        file.delete();
+    }
+
+    @Test
     @DisplayName("HEAD 与 GET 同样可达，但不带响应体")
     void headWorksLikeGetWithoutBody(@TempDir final File dataDir) throws Exception {
         try (LocalStore store = storeWithOneSpan(dataDir);
