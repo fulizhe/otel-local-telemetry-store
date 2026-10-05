@@ -113,19 +113,42 @@ java -javaagent:opentelemetry-javaagent.jar \
 | 途径 | 适合 |
 | --- | --- |
 | 应用日志里每 60 秒一行 `周期 dataDir=… \| store spans=N logs=N metricPoints=N resources=M` | 快速自查"有没有收到、存了多少" |
-| `jconsole` → MBeans → `io.github.fulizhe.otelstore` → `LocalStoreSummary` | 交互式排查：`summary` / `recentSpans(10)` / `spansOfTrace(<trace_id>)` / `spanPayloadHex(<id>)` |
-| 优雅关停（Ctrl-C）时那行 `退出 …` | 本次进程最终存了多少 |
+| 浏览器打开读口那侧 `http://<host>:17890/` | 交互式排查：计数、队列、环形文件、配置、span 与日志列表、按 trace_id 看整条调用链 |
+| `jconsole` → MBeans → `io.github.fulizhe.otelstore` → `LocalStoreSummary` | 进程内的完整快照（`summary` / `recentSpans` / `spansOfTrace` / `spanPayloadHex`） |
 
 那行周期汇总是本扩展**唯一默认的周期性日志输出**；不想看就把
 `io.github.fulizhe.otelstore` 这个 logger 的级别调高。
 
-下一阶段的形态是补上 HTTP 读口（含 Prometheus 文本端点），届时再生效的是：
+### 端点清单（封闭清单）
+
+全部只接受 `GET` / `HEAD`，全部受 `otel.localstore.auth` 控制（默认不要求）。
+清单是封闭的：没有任意 SQL，也没有原始载荷下载口（见 [ADR-6](docs/adr/adr-06-readout-http-surface.md)）。
+
+| 端点 | 返回 |
+| --- | --- |
+| `/` | 只读页面（不含任何数据，数据由页面里的 JS 带头去取） |
+| `/api/summary` | 计数与健康：生效配置 / 三条队列 / 各表行数 / 两个环的写游标与覆盖轮次 |
+| `/api/traces?limit=&traceId=` | span 表头行（**不含载荷**），按 id 倒序；给了 `traceId` 则按开始时间排 |
+| `/api/logs?limit=&traceId=` | 日志表头行，同上 |
+| `/metrics` | Prometheus 文本（每个指标每个属性组合的**当前值**） |
+| `/api/metrics` `/api/self` `/api/self-log` | 随 Phase 5 后续几段落地 |
+
+`limit` 默认 20、上限 200（`/metrics` 不限，它按序列给）。
+**没有数据返回 200 + 空数组**，只有参数非法才 4xx —— 「没有数据」与「请求写错了」必须能分开。
 
 ```bash
-     -Dotel.localstore.host=0.0.0.0 \
-     -Dotel.localstore.port=17890 \
-     -Dotel.localstore.auth=true \
+curl.exe http://host:17890/api/summary
+curl.exe "http://host:17890/api/traces?traceId=<32 位十六进制>"
+# 配了鉴权时：
+curl.exe -H "X-Otel-Store-Token: <dataDir>/otelstore.token 里的内容" http://host:17890/api/summary
 ```
+
+> **两个已知限制**（都在 ADR-6 里记着）：
+> ① `/metrics` 的标签是 `attr_key` **哈希**而不是 `region="east"` —— 表里只存了属性组合的哈希。
+> 各条线仍然是分开的，只是标签暂时读不懂。
+> ② 读口**不开 CORS**，所以那个页面要单独打开，不能从别处 fetch。
+
+下一阶段的形态是补齐其余端点（含 Prometheus 与载荷详情），届时读口相关配置全部生效：
 
 端口被占用时自动退到随机端口并在日志里报实际值 —— **端口冲突不会让应用启动失败**。
 
@@ -136,9 +159,9 @@ java -javaagent:opentelemetry-javaagent.jar \
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `host` | `0.0.0.0` | 读口绑定地址，默认允许远程访问。**读口未做，暂不生效** |
-| `port` | `17890` | 读口端口；避开 OTLP 惯例的 4317 / 4318。**同上** |
-| `auth` | `false` | 是否要求访问 token。默认**不要求** —— 见上面的 ④ |
+| `host` | `0.0.0.0` | 读口绑定地址，默认允许远程访问 |
+| `port` | `17890` | 读口端口；避开 OTLP 惯例的 4317 / 4318。**被占用时自动退到随机端口**，实际端口写进 `<dataDir>/otelstore.port` 与启动日志 |
+| `auth` | `false` | 是否要求访问 token。默认**不要求** —— 见上面的 ④。启用后读口数据端点要 token（`X-Otel-Store-Token` 头），token 落在 `<dataDir>/otelstore.token` |
 | `token` | 进程启动时随机生成 | 仅当 `auth=true` 时有意义 |
 | `dataDir` | `./otel-local-telemetry-store` | 数据目录 |
 | `capped.traces.bytes` | 256 MiB | traces 环形文件容量 |

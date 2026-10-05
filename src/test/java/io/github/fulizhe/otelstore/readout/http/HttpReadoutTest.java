@@ -21,7 +21,10 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.URL;
 import java.nio.charset.Charset;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
@@ -186,12 +189,15 @@ class HttpReadoutTest {
         try (LocalStore store = storeWithOneSpan(dataDir);
              HttpReadout readout = start(dataDir, 0, false, null, store)) {
             final int port = readout.getActualPort();
-            // 本段只端点已落地：/ 与 /api/summary。其余端点随 Phase 5 逐段加。
-            for (final String path : new String[]{"/", "/api/summary"}) {
+            // 本段已落地的端点：/、/api/summary、/api/traces、/api/logs、/metrics
+            for (final String path : new String[]{"/", "/api/summary", "/api/traces", "/api/logs", "/metrics"}) {
                 assertEquals(200, get(port, path).status, path + " 用 GET 应当可达");
             }
-            assertEquals(404, get(port, "/api/traces").status,
-                    "还没实现的端点必须是 404 而不是 200 空壳 —— 否则会以为它通了");
+            // 还没实现的必须 404 而不是 200 空壳 —— 否则会以为它通了。
+            // /api/metrics 是下一段的事；/api/payload 则是**永远不提供**的那个（ADR-6 第七节）
+            for (final String path : new String[]{"/api/metrics", "/api/payload/1"}) {
+                assertEquals(404, get(port, path).status, path + " 还没实现，必须是 404");
+            }
             for (final String method : new String[]{"POST", "PUT", "DELETE", "OPTIONS"}) {
                 final Response r = call(port, "/api/summary", method, null, null);
                 assertEquals(405, r.status, method + " 应当被拒");
@@ -205,12 +211,95 @@ class HttpReadoutTest {
     void unknownEndpointIsStructured404(@TempDir final File dataDir) throws Exception {
         try (LocalStore store = storeWithOneSpan(dataDir);
              HttpReadout readout = start(dataDir, 0, false, null, store)) {
-            final Response r = get(readout.getActualPort(), "/api/traces");
+            // 用 /api/payload 当"没有的端点"：它是 ADR-6 第七节**明确不提供**的那个，
+            // 拿它来钉 404 顺带把那条否决也钉住了
+            final Response r = get(readout.getActualPort(), "/api/payload/1");
             assertEquals(404, r.status);
             assertTrue(r.body.contains("\"error\":\"not_found\""), r.body);
             assertFalse(r.body.contains("\tat "), "响应里绝不能含栈：" + r.body);
             assertTrue(r.body.contains("adr-06"), "404 要指出去向，别让人猜：" + r.body);
         }
+    }
+
+    @Test
+    @DisplayName("span 与日志列表：返回表头行，且每行带 Resource 原文")
+    void listEndpointsReturnHeaderRowsWithResource(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final int port = readout.getActualPort();
+
+            final String spans = get(port, "/api/traces?limit=5").body;
+            assertTrue(spans.startsWith("[") && spans.endsWith("]"), "要的是数组：" + spans);
+            assertTrue(spans.contains("\"name\":\"demo-span\""), spans);
+            assertTrue(spans.contains("\"traceId\":\"abcdef0123456789abcdef0123456789\""), spans);
+            assertTrue(spans.contains("\"resource\":\"service.name=s:demo\""),
+                    "每行要带上 Resource 的规范化文本，页面不必再发一次请求：" + spans);
+
+            // 行里是 ADR-2 的表头列 + 末尾追加的 resource，**没有载荷**。
+            // 断言用"不需要解析 JSON"的方式：前缀钉住列顺序，resource 是最后一个键
+            //（它由 withResource 追加），再钉住没有叫 payload 的键（payloadId 是表头列，
+            // 与"载荷"不是一回事）。
+            assertTrue(spans.startsWith("[{\"id\":1,\"traceId\":\"abcdef"), spans);
+            assertTrue(spans.contains("\"resource\":\"service.name=s:demo\"}"),
+                    "resource 必须是最后一个键（由 withResource 追加）：" + spans);
+            assertFalse(spans.contains("\"payload\":"), "载荷不进列表：载荷只在详情页按需解码");
+            assertFalse(spans.contains("base64"), spans);
+            assertFalse(spans.contains("6164"), "载荷字节（\"payload\" 的十六进制）不能出现在列表里：" + spans);
+
+            final String logs = get(port, "/api/logs?limit=5").body;
+            assertEquals("[]", logs.trim(), "没有日志时空数组，不是 404 也不是 null");
+        }
+    }
+
+    @Test
+    @DisplayName("没有数据返回 200 + 空数组；参数非法才 400")
+    void emptyResultIsNotAnError(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final int port = readout.getActualPort();
+            final String missing = "ffffffffffffffffffffffffffffffff";
+            assertEquals(200, get(port, "/api/traces?traceId=" + missing).status);
+            assertEquals("[]", get(port, "/api/traces?traceId=" + missing).body.trim(),
+                    "合法但库里没有 → 200 + 空数组");
+            assertEquals("[]", get(port, "/api/logs?traceId=" + missing).body.trim());
+
+            // 格式非法才 400：拿它去查一次索引是"用户还没发现 bug，读口先替他查了一轮库"
+            for (final String bad : new String[]{"abc", "zzz", "123", missing + "00"}) {
+                final Response r = get(port, "/api/traces?traceId=" + bad);
+                assertEquals(400, r.status, "traceId=" + bad + " 应当被拒");
+                assertTrue(r.body.contains("\"error\":\"bad_request\""), r.body);
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("按 traceId 取回该 trace 的全部 span，按开始时间排")
+    void spansOfOneTraceComeBack(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final int port = readout.getActualPort();
+            final String hit = get(port, "/api/traces?traceId=abcdef0123456789abcdef0123456789").body;
+            assertTrue(hit.contains("demo-span"), hit);
+
+            // limit 夹取：不给、超大、负数都要能用（共享层是封顶口径所在）
+            for (final String q : new String[]{"", "?limit=1", "?limit=100000", "?limit=-3",
+                    "?limit=not-a-number", "?limit="}) {
+                assertEquals(200, get(port, "/api/traces" + q).status, "limit=" + q + " 应当能用");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("traceId 的格式校验：32 位十六进制")
+    void traceIdFormatValidation() {
+        assertTrue(HttpReadout.isTraceId("abcdef0123456789abcdef0123456789"));
+        assertTrue(HttpReadout.isTraceId("00000000000000000000000000000000"));
+        assertTrue(HttpReadout.isTraceId("ABCDEF0123456789ABCDEF0123456789"), "大写也算十六进制");
+        assertFalse(HttpReadout.isTraceId("abc"));
+        assertFalse(HttpReadout.isTraceId("abcdef0123456789abcdef01234567890"), "33 位");
+        assertFalse(HttpReadout.isTraceId("gbcdef0123456789abcdef0123456789"), "非十六进制字符");
+        assertFalse(HttpReadout.isTraceId(null));
+        assertFalse(HttpReadout.isTraceId(""));
     }
 
     @Test

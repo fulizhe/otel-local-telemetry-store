@@ -100,6 +100,30 @@
   </div>
 
   <div class="card">
+    <h2>span <span class="pill" id="spans-count"></span></h2>
+    <div class="row">
+      <label for="trace-id">trace_id</label>
+      <input id="trace-id" class="grow" placeholder="粘一个 trace_id（32 位十六进制）看整条调用链；留空看最近的" autocomplete="off">
+      <button onclick="loadLists()">查询</button>
+      <button class="ghost" onclick="clearTrace()">清除</button>
+    </div>
+    <div id="spans-msg" class="foot"></div>
+    <table>
+      <thead><tr><th>开始</th><th>name</th><th>耗时</th><th>状态</th><th>scope</th><th>资源</th></tr></thead>
+      <tbody id="spans"><tr><td colspan="6" style="color:var(--dim)">–</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>日志 <span class="pill" id="logs-count"></span></h2>
+    <div id="logs-msg" class="foot"></div>
+    <table>
+      <thead><tr><th>时间</th><th>severity</th><th>正文预览</th><th>trace</th></tr></thead>
+      <tbody id="logs"><tr><td colspan="4" style="color:var(--dim)">–</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
     <h2>生效配置</h2>
     <table><tbody id="config"><tr><td colspan="2" style="color:var(--dim)">–</td></tr></tbody></table>
   </div>
@@ -107,7 +131,13 @@
   <div class="foot">
     这一页<b>不含任何数据</b>，数据都由页面里的 JS 带头去取 ——
     所以本页不需要 token，<code>/api/*</code> 才需要。
-    其余端点（trace 与日志列表、指标、Prometheus、自监控、自日志）随 Phase 5 逐段落地。
+    <br>
+    <b>标签说明</b>：<code>attr_key</code> 是属性组合的<b>哈希</b>而不是属性本身
+    （表里只存了哈希，见 ADR-6 第十一节）——
+    所以现在看到的是 <code>a3f9c2e1</code> 而不是 <code>region="east"</code>。
+    各条线仍然是<b>分开</b>的，只是标签暂时读不懂。
+    <br>
+    其余端点（指标点、Prometheus、自监控、自日志、载荷详情）随 Phase 5 逐段落地。
   </div>
 </div>
 
@@ -205,7 +235,123 @@
 
   if (token()) { $('token').value = token(); }
   refresh();
-  setInterval(refresh, 30000);
+  loadLists();
+  setInterval(function () { refresh(); loadLists(); }, 30000);
+
+  // ---------------- 列表
+
+  function clearTrace() { $('trace-id').value = ''; loadLists(); }
+
+  function headers() {
+    var h = {};
+    var t = token();
+    if (t) { h['X-Otel-Store-Token'] = t; }
+    return h;
+  }
+
+  function loadLists() {
+    var trace = $('trace-id').value.trim();
+    var q = trace ? '&traceId=' + encodeURIComponent(trace) : '';
+    fetch('/api/traces?limit=20' + q, { headers: headers(), cache: 'no-store' })
+      .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
+      .then(function (res) { renderSpans(res); })
+      .catch(function (e) {
+        $('spans-msg').innerHTML = '<span class="err">读 span 列表失败：' + esc(e.message) + '</span>';
+      });
+
+    fetch('/api/logs?limit=20' + q, { headers: headers(), cache: 'no-store' })
+      .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
+      .then(function (res) { renderLogs(res); })
+      .catch(function (e) {
+        $('logs-msg').innerHTML = '<span class="err">读日志列表失败：' + esc(e.message) + '</span>';
+      });
+  }
+
+  function renderSpans(res) {
+    if (res.s === 401) { $('auth-card').style.display = ''; return; }
+    if (res.s !== 200 || !Array.isArray(res.d)) {
+      $('spans-msg').innerHTML = '<span class="err">' + esc(errorText(res)) + '</span>';
+      return;
+    }
+    $('spans-msg').textContent = res.d.length
+      ? '共 ' + res.d.length + ' 条' + ($('trace-id').value.trim() ? '（该 trace，按开始时间排）' : '（最近）')
+      : '没有数据 —— 这不是故障：可能是没数据、已被行数水位淘汰、或该 trace 的采集期已过。';
+    $('spans-count').textContent = res.d.length + ' 条';
+    $('spans').innerHTML = res.d.map(function (r) {
+      return '<tr><td>' + esc(ts(r.startTime)) + '</td>'
+        + '<td>' + esc(clip(r.name, 48))
+          + (r.traceId ? ' <a href="#" onclick="pickTrace(\'' + esc(r.traceId) + '\');return false;" '
+              + 'style="color:var(--dim)">trace</a>' : '')
+          + '</td>'
+        + '<td class="num">' + dur(r.startTime, r.endTime) + '</td>'
+        + '<td>' + statusText(r.statusCode) + '</td>'
+        + '<td>' + esc(clip(r.scopeName, 28)) + '</td>'
+        + '<td>' + esc(clip(r.resource, 40)) + '</td></tr>';
+    }).join('') || '<tr><td colspan="6" style="color:var(--dim)">–</td></tr>';
+  }
+
+  function renderLogs(res) {
+    if (res.s === 401) { $('auth-card').style.display = ''; return; }
+    if (res.s !== 200 || !Array.isArray(res.d)) {
+      $('logs-msg').innerHTML = '<span class="err">' + esc(errorText(res)) + '</span>';
+      return;
+    }
+    $('logs-msg').textContent = res.d.length ? '共 ' + res.d.length + ' 条' : '没有数据。';
+    $('logs-count').textContent = res.d.length + ' 条';
+    $('logs').innerHTML = res.d.map(function (r) {
+      return '<tr><td>' + esc(ts(r.timestamp)) + '</td>'
+        + '<td>' + esc(clip(r.severityText || severityName(r.severityNumber), 12)) + '</td>'
+        + '<td>' + esc(clip(r.bodyPreview, 90)) + '</td>'
+        + '<td>' + (r.traceId ? '<a href="#" onclick="pickTrace(\'' + esc(r.traceId)
+            + '\');return false;" style="color:var(--dim)">' + esc(clip(r.traceId, 12)) + '…</a>' : '')
+        + '</td></tr>';
+    }).join('') || '<tr><td colspan="4" style="color:var(--dim)">–</td></tr>';
+  }
+
+  function pickTrace(id) { $('trace-id').value = id; loadLists(); }
+
+  function errorText(res) {
+    if (res.d && res.d.message) { return res.d.message; }
+    return 'HTTP ' + res.s;
+  }
+
+  /** 纳秒 → 本地时间。OTLP 原生就是 epoch nanos，这里只做单位换算（ADR-2 第三条坑）。 */
+  function ts(nanos) {
+    if (nanos === null || nanos === undefined || nanos === 0) { return '–'; }
+    var d = new Date(Math.round(nanos / 1000000));
+    return isNaN(d.getTime()) ? '–' : d.toLocaleTimeString();
+  }
+
+  function dur(from, to) {
+    if (!from || !to || to < from) { return '–'; }
+    var ms = (to - from) / 1000000;
+    return ms < 1 ? ms.toFixed(3) + ' ms' : ms.toFixed(1) + ' ms';
+  }
+
+  function statusText(code) {
+    if (code === 2) { return '<span class="err">ERROR</span>'; }
+    if (code === 1) { return '<span class="ok">OK</span>'; }
+    return 'unset';
+  }
+
+  function severityName(n) {
+    if (n === null || n === undefined) { return ''; }
+    if (n === 0) { return 'UNDEFINED'; }
+    if (n >= 17) { return 'FATAL'; }
+    if (n >= 13) { return 'ERROR'; }
+    if (n >= 9) { return 'INFO'; }
+    if (n >= 5) { return 'DEBUG'; }
+    return 'TRACE';
+  }
+
+  /**
+   * 截断，且**截断可见**。
+   * 半截内容看起来像完整的，比明确写着被截断危险得多（ADR-6 第十节）。
+   */
+  function clip(s, n) {
+    var v = s === null || s === undefined ? '' : String(s);
+    return v.length <= n ? v : v.slice(0, n) + '…';
+  }
 </script>
 </body>
 </html>
