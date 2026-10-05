@@ -238,6 +238,30 @@ class LocalStoreTest {
     }
 
     @Test
+    @DisplayName("按 trace 查日志：只给该 trace 的，按时间排")
+    void logsOfTrace(@TempDir final File dataDir) throws Exception {
+        final String trace = "0000000000000000000000000000000a";
+        final String other = "0000000000000000000000000000000b";
+        try (LocalStore store = new LocalStore(config(dataDir), "test-logs-of-trace")) {
+            // 先插时间靠后的，再插时间靠前的 —— 用来证明排序看的是时间而不是插入顺序
+            store.store(new LogRecordEntry(trace, "0123456789abcdef", 9, "INFO",
+                    200L, 201L, "second", "scope", "1.0", resource(), 0, "p2".getBytes(UTF8)));
+            store.store(new LogRecordEntry(trace, "0123456789abcdef", 9, "WARN",
+                    100L, 101L, "first", "scope", "1.0", resource(), 0, "p1".getBytes(UTF8)));
+            store.store(new LogRecordEntry(other, "0123456789abcdef", 9, "INFO",
+                    150L, 151L, "other-trace", "scope", "1.0", resource(), 0, "p3".getBytes(UTF8)));
+
+            final List<Map<String, Object>> rows = store.logsOfTrace(trace);
+            assertEquals(2, rows.size(), "只给这个 trace 的，别的 trace 不能混进来");
+            assertEquals("first", rows.get(0).get("bodyPreview"), "按时间升序，不看插入顺序");
+            assertEquals("second", rows.get(1).get("bodyPreview"));
+
+            assertTrue(store.logsOfTrace("ffffffffffffffffffffffffffffffff").isEmpty(),
+                    "没有数据的 trace 返回空列表");
+        }
+    }
+
+    @Test
     @DisplayName("换个看不见 H2 的 TCCL 也照样能开库（模拟 agent 启动时的环境）")
     void opensEvenWhenThreadContextClassLoaderCannotSeeH2(@TempDir final File dataDir) throws Exception {
         // 这条钉的是 2026-10-04 首次挂 agent 时踩到的坑：DriverManager 在类初始化时

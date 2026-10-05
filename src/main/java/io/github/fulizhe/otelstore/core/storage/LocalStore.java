@@ -501,6 +501,32 @@ public final class LocalStore implements AutoCloseable {
                 LOG_COLUMNS);
     }
 
+    /**
+     * 某个 trace 的全部日志记录，按时间排。
+     *
+     * <p>日志自带 trace / span 上下文（ADR-2 的 log_record 表有 {@code trace_id} 列），
+     * 所以"按 trace 拉全量日志"是真实需求 —— 没有它，日志与它所属的 span 就对不上。
+     *
+     * <p>不设 limit，与 {@link #spansOfTrace(String)} 一致：一个 trace 内的记录数
+     * 由 trace 本身决定，不是无限增长的；真要防爆由行数水位兜底。
+     *
+     * <p>走 {@code idx_log_trace} 索引（ADR-2 建的那三个索引之一）。
+     */
+    public List<Map<String, Object>> logsOfTrace(final String traceId) throws SQLException {
+        final PreparedStatement ps;
+        synchronized (lock) {
+            ps = conn.prepareStatement("SELECT id, trace_id, span_id, severity_number, severity_text,"
+                    + " timestamp, body_preview, scope_name, scope_version, resource_id, attr_count, payload_id"
+                    + " FROM log_record WHERE trace_id = ? ORDER BY timestamp ASC, id ASC");
+            try {
+                ps.setString(1, traceId == null ? "" : traceId);
+                return read(ps, LOG_COLUMNS);
+            } finally {
+                ps.close();
+            }
+        }
+    }
+
     /** 某个指标名最近的点（新到旧）。 */
     public List<Map<String, Object>> recentMetricPoints(final String metricName, final int limit)
             throws SQLException {
