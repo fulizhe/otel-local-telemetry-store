@@ -147,8 +147,14 @@ public final class PrometheusText {
     /**
      * 直方图：{@code _bucket{le="…"}}（累计）+ {@code _sum} + {@code _count}。
      *
-     * <p>桶计数是<b>非累计</b>的（每个桶自己的计数），而 Prometheus 要求
-     * {@code _bucket} 的 le 标签是<b>累计</b>值 —— 少这一步画出来的直方图是错的。
+     * <p>两件容易做错、且错了会直接画错图的事：
+     * <ol>
+     *   <li>桶计数是<b>非累计</b>的（每个桶自己的计数），而 Prometheus 要求
+     *       {@code _bucket} 的 le 标签是<b>累计</b>值。</li>
+     *   <li>边界比桶<b>少一个</b>（OTel 的形状，见 {@code MetricDetail}），
+     *       所以必须补一个 {@code le="+Inf"} 的桶。少补它，抓取器算出来的总量
+     *       会小于 {@code _count}。</li>
+     * </ol>
      */
     private static void appendHistogram(final StringBuilder sb, final String name, final String labels,
             final String sum, final long count, final MetricDetail detail) {
@@ -159,9 +165,10 @@ public final class PrometheusText {
             return;
         }
         long cumulative = 0L;
-        for (int i = 0; i < detail.bounds.size(); i++) {
+        for (int i = 0; i < detail.counts.size(); i++) {
             cumulative += detail.counts.get(i).longValue();
-            sb.append(name).append("_bucket").append(withLabel(labels, "le", format(detail.bounds.get(i))))
+            final String le = i < detail.bounds.size() ? format(detail.bounds.get(i)) : "+Inf";
+            sb.append(name).append("_bucket").append(withLabel(labels, "le", le))
                     .append(' ').append(cumulative).append('\n');
         }
         appendSimple(sb, name + "_sum", labels, sum);

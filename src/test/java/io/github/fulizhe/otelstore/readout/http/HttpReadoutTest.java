@@ -283,18 +283,21 @@ class HttpReadoutTest {
                     MetricPointEntry.MetricKind.HISTOGRAM, 1700000000000L, null, "io.demo", "1.0",
                     Collections.singletonList(KeyValue.of("route", "/orders")),
                     Double.NaN, 7L, 12.5d,
-                    "explicit;min=1.0;max=9.0;bounds=[2.0, 5.0];counts=[3, 4]"));
+                    // 真实形状：3 个桶 → **2** 个边界（OTel 的 getBoundaries 永远比 getCounts 少一个）
+                    "explicit;min=1.0;max=9.0;bounds=[2.0, 5.0];counts=[3, 4, 0]"));
             store.store(new MetricPointEntry("http.server.duration", "请求耗时", "ms",
                     MetricPointEntry.MetricKind.HISTOGRAM, 1700000001000L, null, "io.demo", "1.0",
                     Collections.singletonList(KeyValue.of("route", "/cart")),
                     Double.NaN, 1L, 1.0d,
-                    "explicit;min=1.0;max=1.0;bounds=[1.0];counts=[1]"));
+                    "explicit;min=1.0;max=1.0;bounds=[1.0];counts=[1, 0]"));
             try (HttpReadout readout = start(dataDir, 0, false, null, store)) {
                 final String body = get(readout.getActualPort(), "/api/metrics?name=http.server.duration")
                         .body;
-                assertTrue(body.contains("\"flavor\":\"explicit\""), body);
-                assertTrue(body.contains("\"bounds\":[2.0,5.0]"), body);
-                assertTrue(body.contains("\"counts\":[3,4]"), body);
+                assertTrue(body.contains("\"flavor\":\"explicit\""),
+                        "真实形状必须认得出来：" + body);
+                assertTrue(body.contains("\"leBoundaries\":[\"2.0\",\"5.0\",\"+Inf\"]"),
+                        "le 要含 +Inf（最后一个桶没有上界）：" + body);
+                assertTrue(body.contains("\"cumulative\":[3,7,7]"), "累计计数：" + body);
                 assertTrue(body.contains("\"metricCount\":7"), body);
                 assertFalse(body.contains("explicit;min="), "不该把 detail 原文当结构吐出去：" + body);
 

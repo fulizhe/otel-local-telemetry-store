@@ -24,6 +24,19 @@ import java.util.Map;
  *
  * <p><b>认不出来时 flavor 为 {@code null} 且不抛异常</b>：调用方据此"不给桶"，
  * 而不是编一个看起来合理的桶 —— 给错的桶会让 `histogram_quantile` 算出错的分位数。
+ * <p><b>{@code bounds} 比 {@code counts} 少一个</b> —— 这不是我们定的格式，是 OTel 的形状：
+ * {@code HistogramPointData.getBoundaries()} 给出 N 个桶之间的 N-1 个边界，
+ * 而 {@code getCounts()} 给出 N 个桶的计数。所以 {@code counts.size() == bounds.size() + 1}
+ * 才是合法的直方图（"合法"指形状对得上；不代表每个桶都有数据）。
+ *
+ * <p>因此渲染 Prometheus 的 {@code _bucket} 时，**每个边界一个累计值，还要补一个 {@code +Inf} 桶**
+ * （OTel 的最后一个桶没有上界，Prometheus 要求有）。少补那个 {@code +Inf}，
+ * 抓取器算出来的总量会小于 {@code _count}。
+ *
+ * <p>写成"边界数 == 计数数"这种直觉判断的代价，本项目已经付过一次：
+ * 真实数据（15 边界 / 16 计数）全被判成"认不出来"，而当时全绿的测试用的是
+ * 「2 边界 / 2 计数」——<b>那个组合在真实 SDK 输出里根本不存在</b>。
+ * 测试数据必须照着真实形状写，否则绿灯只是在验证一个不会发生的世界。
  */
 final class MetricDetail {
 
@@ -71,8 +84,9 @@ final class MetricDetail {
         if ("explicit".equals(flavor)) {
             final List<Double> bounds = doubles(field(detail, "bounds"));
             final List<Long> counts = longs(field(detail, "counts"));
-            // 边界与计数必须等长，否则"第 i 个桶的边界"根本无从谈起 —— 直接当认不出来
-            if (bounds == null || counts == null || bounds.size() != counts.size()) {
+            // N 个桶 + N-1 个边界（见类注释）。多或少都认不出来 ——
+            // "第 i 个桶的边界"在形状不对时根本无从谈起，硬凑只会画出错的直方图。
+            if (bounds == null || counts == null || counts.size() != bounds.size() + 1) {
                 return new MetricDetail(UNKNOWN, null, null, null, null, null, null, null);
             }
             return new MetricDetail(flavor, dbl(field(detail, "min")), dbl(field(detail, "max")),
@@ -112,10 +126,26 @@ final class MetricDetail {
             m.put("zeroCount", zeroCount);
         }
         if (bounds != null) {
-            m.put("bounds", bounds);
-        }
-        if (counts != null) {
-            m.put("counts", counts);
+            // leBoundaries 是**字符串**列表，且最后一个是 "+Inf"：
+            // ① Prometheus 的 le 本身就是标签字符串；
+            // ② +Inf 不是合法 JSON 数值（会被编码器按 NaN/Infinity 规则写成 null），写字符串才对。
+            final List<String> le = new ArrayList<String>(bounds.size() + 1);
+            for (int i = 0; i < bounds.size(); i++) {
+                le.add(String.valueOf(bounds.get(i)));
+            }
+            le.add("+Inf");
+            m.put("leBoundaries", le);
+            if (counts != null) {
+                m.put("counts", counts);
+                // 每个 le 的**累计**计数（页面直接显示，不用自己累加）
+                final List<Long> cumulative = new ArrayList<Long>(counts.size());
+                long sum = 0L;
+                for (int i = 0; i < counts.size(); i++) {
+                    sum += counts.get(i).longValue();
+                    cumulative.add(Long.valueOf(sum));
+                }
+                m.put("cumulative", cumulative);
+            }
         }
         if (quantiles != null && !quantiles.isEmpty()) {
             final List<Object> qs = new ArrayList<Object>(quantiles.size());

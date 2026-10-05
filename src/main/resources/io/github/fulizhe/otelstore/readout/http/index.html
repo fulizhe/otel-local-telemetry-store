@@ -51,9 +51,40 @@
   .stat .v { font-size: 20px; font-variant-numeric: tabular-nums; }
   .stat .k { color: var(--dim); font-size: 12px; }
   .foot { color: var(--dim); font-size: 12px; margin-top: 10px; }
+
+  /* 详情是**弹出框**，不是列表下面的一张卡片 ——
+     卡片插在列表里与其它卡片长得一样，看不出"这是临时打开的东西"；
+     弹出框才表达"这是这一行的详情，关掉就回到列表"。 */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55);
+             display: flex; align-items: flex-start; justify-content: center;
+             padding: 40px 16px; z-index: 50; overflow: auto; }
+  .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+           max-width: 900px; width: 100%; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
+  .modal-head { display: flex; align-items: center; gap: 10px;
+                padding: 14px 18px; border-bottom: 1px solid var(--line);
+                position: sticky; top: 0; background: var(--panel); }
+  .modal-head h2 { margin: 0; font-size: 15px; }
+  .modal-body { padding: 16px 18px 22px; }
+  .modal h3 { font-size: 13px; margin: 16px 0 6px; color: var(--fg); }
 </style>
 </head>
 <body>
+<!-- 详情弹出框。默认 display:none，由 openDetail() 填内容后显示。 -->
+<div class="overlay" id="detail-overlay" style="display:none" onclick="if(event.target===this)closeDetail();">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+    <div class="modal-head">
+      <h2 id="detail-title">详情</h2>
+      <span class="pill" id="detail-kind"></span>
+      <span style="flex:1"></span>
+      <button class="ghost" onclick="closeDetail()">关闭 <span style="color:var(--dim)">Esc</span></button>
+    </div>
+    <div class="modal-body">
+      <div id="detail-msg" class="foot"></div>
+      <div id="detail-body"></div>
+    </div>
+  </div>
+</div>
+
 <header>
   <h1>otel-local-telemetry-store · 读口</h1>
   <div class="sub">
@@ -137,13 +168,6 @@
         <th class="num">计数</th><th class="num">求和</th><th>结构</th></tr></thead>
       <tbody id="metrics"><tr><td colspan="7" style="color:var(--dim)">–</td></tr></tbody>
     </table>
-  </div>
-
-  <div class="card" id="detail-card" style="display:none">
-    <h2>详情 <span class="pill" id="detail-kind"></span>
-      <button class="ghost" style="float:right" onclick="closeDetail()">关闭</button></h2>
-    <div id="detail-msg" class="foot"></div>
-    <div id="detail-body"></div>
   </div>
 
   <div class="card">
@@ -375,19 +399,22 @@
 
   // ---------------- 详情
 
-  function closeDetail() { $('detail-card').style.display = 'none'; }
+  function closeDetail() {
+    $('detail-overlay').style.display = 'none';
+    document.body.style.overflow = '';
+  }
 
   function openDetail(id, kind) {
     var isSpan = kind !== 'log';
-    var card = $('detail-card');
-    card.style.display = '';
-    $('detail-kind').textContent = isSpan ? 'span #' + id : '日志 #' + id;
+    $('detail-overlay').style.display = 'flex';
+    document.body.style.overflow = 'hidden';   // 背景不该跟着滚
+    $('detail-kind').textContent = (isSpan ? 'span #' : '日志 #') + id;
     $('detail-msg').textContent = '加载中…';
     $('detail-body').innerHTML = '';
     fetch('/api/' + (isSpan ? 'traces/' : 'logs/') + id, { headers: headers(), cache: 'no-store' })
       .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
       .then(function (res) {
-        if (res.s === 401) { $('auth-card').style.display = ''; return; }
+        if (res.s === 401) { $('auth-card').style.display = ''; closeDetail(); return; }
         if (res.s !== 200 || !res.d) {
           $('detail-msg').innerHTML = '<span class="err">' + esc(errorText(res)) + '</span>';
           return;
@@ -398,6 +425,11 @@
         $('detail-msg').innerHTML = '<span class="err">读详情失败：' + esc(e.message) + '</span>';
       });
   }
+
+  /** Esc 关闭 —— 弹出框的标准行为，不用去够鼠标。 */
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape') { closeDetail(); }
+  });
 
   function renderDetail(d, isSpan) {
     var head = '<table><tbody>' + kv([
@@ -422,8 +454,7 @@
     }
 
     $('detail-msg').innerHTML = '';
-    $('detail-body').innerHTML = head + '<h3 style="font-size:13px;margin:14px 0 4px">属性</h3>'
-      + payloadHtml;
+    $('detail-body').innerHTML = head + '<h3>属性</h3>' + payloadHtml;
   }
 
   function attrTable(attrs) {
@@ -441,7 +472,7 @@
   function eventTable(decoded) {
     var events = (decoded || {}).events || [];
     if (!events.length) { return ''; }
-    return '<h3 style="font-size:13px;margin:14px 0 4px">事件（' + events.length + '）</h3>'
+    return '<h3>事件（' + events.length + '）</h3>'
       + '<table><thead><tr><th>时间</th><th>名字</th><th>属性</th></tr></thead><tbody>'
       + events.map(function (e) {
           return '<tr><td>' + esc(ts(e.timeUnixNano)) + '</td><td>' + esc(e.name) + '</td>'
@@ -519,11 +550,15 @@
     if (d.flavor === 'long' || d.flavor === 'double') {
       return '<span style="color:var(--dim)">' + esc(d.flavor === 'long' ? '整数' : '浮点') + '</span>';
     }
-    if (d.flavor === 'explicit' && d.bounds) {
-      var pairs = d.bounds.map(function (b, i) {
-        return '≤' + b + ': ' + (d.counts && d.counts[i] !== undefined ? d.counts[i] : '?');
+    if (d.flavor === 'explicit' && d.leBoundaries) {
+      // 用服务端算好的 leBoundaries（已含 +Inf）与 cumulative —— 页面不自己数"边界比桶少一个"
+      var le = d.leBoundaries, cum = d.cumulative || [];
+      var pairs = le.map(function (b, i) {
+        var label = (b === 'Infinity' || b === null) ? '+∞' : ('≤' + b);
+        return label + ': ' + (cum[i] !== undefined ? cum[i] : '?');
       });
-      return '<span style="color:var(--dim)">' + esc(clip(pairs.join('，'), 80)) + '</span>';
+      return '<span style="color:var(--dim)" title="' + esc(pairs.join('，')) + '">'
+        + esc(clip(pairs.join('，'), 80)) + '</span>';
     }
     if (d.flavor === 'exponential') {
       return '<span style="color:var(--dim)">scale=' + esc(d.scale) + ' 零桶=' + esc(d.zeroCount) + '</span>';

@@ -70,11 +70,13 @@ class PrometheusTextTest {
     void histogramBucketsAreCumulative() {
         final String out = PrometheusText.render(Collections.singletonList(row("http.duration", "HISTOGRAM",
                 null, Long.valueOf(7L), Double.valueOf(12.5d),
-                "explicit;min=1.0;max=9.0;bounds=[2.0, 5.0];counts=[3, 4]", "abc")));
+                "explicit;min=1.0;max=9.0;bounds=[2.0, 5.0];counts=[3, 4, 0]", "abc")));
 
         // 非累计是 [3,4]；累计必须是 [3,7]。少这一步画出来的直方图是错的
         assertTrue(out.contains("http_duration_bucket{attr_key=\"abc\",le=\"2.0\"} 3"), out);
         assertTrue(out.contains("http_duration_bucket{attr_key=\"abc\",le=\"5.0\"} 7"), out);
+        assertTrue(out.contains("http_duration_bucket{attr_key=\"abc\",le=\"+Inf\"} 7"),
+                "最后一个桶没有上界，必须补 +Inf，否则总量小于 _count：" + out);
         assertTrue(out.contains("http_duration_sum{attr_key=\"abc\"} 12.5"), out);
         assertTrue(out.contains("http_duration_count{attr_key=\"abc\"} 7"), out);
         assertTrue(out.contains("# TYPE http_duration untyped"),
