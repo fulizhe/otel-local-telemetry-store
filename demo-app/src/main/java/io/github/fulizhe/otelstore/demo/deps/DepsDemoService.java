@@ -1,6 +1,7 @@
 package io.github.fulizhe.otelstore.demo.deps;
 
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,13 +25,21 @@ public final class DepsDemoService {
     private final DepsRegistry registry;
     private final H2Dependency h2;
     private final RedisDependency redis;
+    private final KafkaDependency kafka;
+    private final GrpcDependency grpc;
+    private final MysqlDependency mysql;
     private final GeneratedSignals stats;
 
     public DepsDemoService(final DepsRegistry registry, final H2Dependency h2,
-                           final RedisDependency redis, final GeneratedSignals stats) {
+                           final RedisDependency redis, final KafkaDependency kafka,
+                           final GrpcDependency grpc, final MysqlDependency mysql,
+                           final GeneratedSignals stats) {
         this.registry = registry;
         this.h2 = h2;
         this.redis = redis;
+        this.kafka = kafka;
+        this.grpc = grpc;
+        this.mysql = mysql;
         this.stats = stats;
     }
 
@@ -107,6 +116,148 @@ public final class DepsDemoService {
             m.put("note", "启动探测时这一项是 ready 的，现在失败了 —— 说明是运行期问题");
             return m;
         }
+    }
+
+    /**
+     * 打一次 Kafka 那一跳（发一条、收一条）。
+     *
+     * <p><b>五跳里唯一能同时看到 PRODUCER 与 CONSUMER 两种 kind 的地方</b> ——
+     * 段 B 的瀑布按 kind 上色时，只有这一跳能证明那两种颜色真的画得出来。
+     */
+    public Map<String, Object> callKafka() {
+        final DepStatus status = registry.get(KafkaDependency.KEY);
+        final Map<String, Object> m = new LinkedHashMap<String, Object>();
+        m.put("dependency", KafkaDependency.KEY);
+        m.put("traceId", currentTraceId());
+
+        if (status == null || !status.ready()) {
+            return degrade(m, status);
+        }
+        try {
+            // 一次 send + 一次 poll，各是一次真实的客户端调用 —— span 来自 kafka-clients，
+            // 不是我们自己开的。**不要为了"让图更好看"加自己的 span。**
+            m.put("ops", kafka.sendAndReceive("hello-from-demo"));
+            stats.addDepCall(KafkaDependency.KEY, true);
+            m.put("ok", Boolean.TRUE);
+            m.put("note", "这一跳会产生 PRODUCER 与 CONSUMER 两种 kind 的 CLIENT span");
+            return m;
+        } catch (final Exception e) {
+            stats.addDepCall(KafkaDependency.KEY, false);
+            LOG.warn("Kafka 调用失败（探测时是通的）", e);
+            m.put("ok", Boolean.FALSE);
+            m.put("error", String.valueOf(e.getMessage()));
+            m.put("note", "启动探测时这一项是 ready 的，现在失败了 —— 说明是运行期问题");
+            return m;
+        }
+    }
+
+    /**
+     * 打一次 gRPC 那一跳。
+     *
+     * <p>它是五跳里链最深的：{@code tomcat → grpc CLIENT → grpc SERVER}。
+     */
+    public Map<String, Object> callGrpc() {
+        final DepStatus status = registry.get(GrpcDependency.KEY);
+        final Map<String, Object> m = new LinkedHashMap<String, Object>();
+        m.put("dependency", GrpcDependency.KEY);
+        m.put("traceId", currentTraceId());
+
+        if (status == null || !status.ready()) {
+            return degrade(m, status);
+        }
+        try {
+            final String echoed = grpc.call("hello-from-demo");
+            stats.addDepCall(GrpcDependency.KEY, true);
+            m.put("ok", Boolean.TRUE);
+            m.put("echoed", echoed);
+            m.put("note", "这一跳同时产生 CLIENT 与 SERVER 两个 span，是五跳里链最深的一条");
+            return m;
+        } catch (final RuntimeException e) {
+            stats.addDepCall(GrpcDependency.KEY, false);
+            LOG.warn("gRPC 调用失败（探测时是通的）", e);
+            m.put("ok", Boolean.FALSE);
+            m.put("error", String.valueOf(e.getMessage()));
+            m.put("note", "启动探测时这一项是 ready 的，现在失败了 —— 说明是运行期问题");
+            return m;
+        }
+    }
+
+    /**
+     * 打一次 MySQL 那一跳。
+     *
+     * <p><b>这是五跳里唯一注定可能失败的一跳</b>（唯一外部依赖），
+     * 所以它是 ADR-7 那套降级口径的第一次真实检验：
+     * 库没起来时端点仍返回 200 + 明确原因，进程照常跑。
+     */
+    public Map<String, Object> callMysql() {
+        final DepStatus status = registry.get(MysqlDependency.KEY);
+        final Map<String, Object> m = new LinkedHashMap<String, Object>();
+        m.put("dependency", MysqlDependency.KEY);
+        m.put("traceId", currentTraceId());
+
+        if (status == null || !status.ready()) {
+            return degrade(m, status);
+        }
+        try {
+            m.put("ops", mysql.queryOrders());
+            stats.addDepCall(MysqlDependency.KEY, true);
+            m.put("ok", Boolean.TRUE);
+            m.put("note", "这一跳与 H2 那一跳都是 scopeName=jdbc；"
+                    + "图上靠 SQL 里的表名（demo_mysql_order）区分是哪个库");
+            return m;
+        } catch (final SQLException e) {
+            stats.addDepCall(MysqlDependency.KEY, false);
+            LOG.warn("MySQL 调用失败（探测时是通的）", e);
+            m.put("ok", Boolean.FALSE);
+            m.put("error", String.valueOf(e.getMessage()));
+            m.put("note", "启动探测时这一项是 ready 的，现在失败了 —— 说明是运行期问题");
+            return m;
+        }
+    }
+
+    /**
+     * 一次请求顺序打出全部五跳，并返回<b>当前 traceId</b>。
+     *
+     * <p>返回 traceId 的理由很实际：{@code /api/traces?traceId=} 是读口唯一的按 trace
+     * 取全部 span 的入口，而人要从页面里抠出那个 32 位十六进制串才能用。
+     * 让响应直接带上它，"五跳都在库里"就变成一条可重复的命令 —— 拷过去就能查。
+     *
+     * <p><b>某一跳降级时其余四跳照常打</b>：一个依赖挂了就让整条链断掉，
+     * 那才是把"靶子"做成了"故障放大器"。五跳共用的是同一个 server span，
+     * 所以它们挂在同一条 trace 上（这正是段 B 的瀑布图要画的东西）。
+     */
+    public Map<String, Object> callAll() {
+        final Map<String, Object> m = new LinkedHashMap<String, Object>();
+        final String traceId = currentTraceId();
+        m.put("traceId", traceId);
+
+        // 顺序固定为页面上展示的顺序，方便肉眼对
+        final Map<String, Object> results = new LinkedHashMap<String, Object>();
+        results.put(H2Dependency.KEY, callH2());
+        results.put(RedisDependency.KEY, callRedis());
+        results.put(KafkaDependency.KEY, callKafka());
+        results.put(GrpcDependency.KEY, callGrpc());
+        results.put(MysqlDependency.KEY, callMysql());
+        m.put("results", results);
+
+        int ok = 0;
+        final List<String> degraded = new ArrayList<String>();
+        for (final Map.Entry<String, Object> e : results.entrySet()) {
+            @SuppressWarnings("unchecked")
+            final Map<String, Object> one = (Map<String, Object>) e.getValue();
+            if (Boolean.TRUE.equals(one.get("ok"))) {
+                ok++;
+            } else {
+                degraded.add(e.getKey());
+            }
+        }
+        m.put("okCount", Integer.valueOf(ok));
+        m.put("totalCount", Integer.valueOf(results.size()));
+        m.put("degraded", degraded);
+        m.put("note", traceId.isEmpty()
+                ? "traceId 是空串：没挂 agent 时 OTel 是 no-op，拿不到 current span（正常）"
+                : "拿这个 traceId 去 /api/traces?traceId= 就能看到这条链的全部 span");
+        return m;
     }
 
     /**

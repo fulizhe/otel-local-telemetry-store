@@ -18,5 +18,11 @@ logging:
   level:
     root: INFO
     io.github.fulizhe.otelstore.demo: INFO
+    # 内嵌 Kafka / ZooKeeper 在 INFO 下会刷掉大量日志，把验收信号（agent 的
+    # 「已注册三条采集管线」与退出汇总行）埋掉。它们的状态我们自己会报进
+    # /demo/deps/status，所以只需要它们的 WARN 以上。
+    kafka: WARN
+    org.apache.kafka: WARN
+    org.apache.zookeeper: WARN
   pattern:
     console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{20} - %msg%n"

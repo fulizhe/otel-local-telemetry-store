@@ -66,4 +66,29 @@ public class DepsDemoController {
     public Map<String, Object> redis() {
         return deps.callRedis();
     }
+
+    @PostMapping("/kafka")
+    public Map<String, Object> kafka() {
+        return deps.callKafka();
+    }
+
+    @PostMapping("/grpc")
+    public Map<String, Object> grpc() {
+        return deps.callGrpc();
+    }
+
+    @PostMapping("/mysql")
+    public Map<String, Object> mysql() {
+        return deps.callMysql();
+    }
+
+    /**
+     * 端到端验收的主路径：一次打五跳并返回 traceId。
+     *
+     * <p>拷返回里的 traceId 去 {@code /api/traces?traceId=}，就能对账"五跳都在库里"。
+     */
+    @PostMapping("/all")
+    public Map<String, Object> all() {
+        return deps.callAll();
+    }
 }

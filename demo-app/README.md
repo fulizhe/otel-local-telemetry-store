@@ -47,10 +47,11 @@ curl.exe --noproxy "*" -X POST "http://localhost:18081/demo/spans?count=3&childP
 | `POST /demo/logs?count=&level=INFO\|WARN\|ERROR` | 在 current span 内部打日志，因此**带 trace 上下文** | 行数 |
 | `POST /demo/metrics?count=` | 一个计数器 + 一个直方图 | 指标点数 = count × 2 |
 | `GET /demo/work?ms=` | 一次真实请求，sleep 指定毫秒 | 由 agent 产生 server span |
-| `GET /demo/stats` | 本应用造了多少（六个计数 + uptime + 五跳各多少/失败多少） | 断言的期望值来源 |
+| `GET /demo/stats` | 本应用造了多少（六个计数 + uptime + 五跳各多少/失败多少 + 每秒计数） | 断言的期望值来源 |
 | `POST /demo/reset` | 计数清零 | — |
-| `POST /demo/deps/h2` | 打一次 H2 那一跳（`demo_h2_order` 表） | 返回**当前 traceId** + `rows` |
 | `GET /demo/deps/status` | 五项依赖的 `ready` / `detail` / `embedded` | 少的那一跳要能提前看到 |
+| `POST /demo/deps/{h2,redis,kafka,grpc,mysql}` | 各打一跳 | 返回**当前 traceId** |
+| `POST /demo/deps/all` | 一次顺序打出五跳 | **端到端验收主路径**：返回 traceId |
 
 ## 五类外部依赖的调用样例
 
@@ -63,33 +64,68 @@ Tomcat 仪表化已经把 server span 设成 current，所以 CLIENT span 会自
 
 当前进度（`GET /demo/deps/status` 是唯一准绳）：
 
-| 跳 | 服务端 | `embedded` | 现状 |
-| --- | --- | --- | --- |
-| `h2` | 进程内内存库 | true | **已通** |
-| `redis` | 进程内（`embedded-redis`） | true | 未接入 |
-| `kafka` | 进程内 KRaft 单节点 | true | 未接入 |
-| `grpc` | 进程内 Netty server | true | 未接入 |
-| `mysql` | **外部实例**（ADR-7 里唯一的例外） | false | 未接入 |
+| 跳 | 服务端 | `embedded` | 端口 | 现状 |
+| --- | --- | --- | --- | --- |
+| `h2` | 进程内内存库 | true | — | **已通** |
+| `redis` | 进程内（`embedded-redis`） | true | 6379 | **已通** |
+| `kafka` | 进程内 broker + 进程内 ZooKeeper | true | 9092 / 2181 | **已通**（**不是 KRaft**，原因见下） |
+| `grpc` | 进程内 Netty server | true | 18900 | **已通** |
+| `mysql` | **外部实例**（ADR-7 里唯一的例外） | false | 13306 | 连得上就通，连不上降级 |
 
 ```powershell
 curl.exe --noproxy "*" "http://localhost:18081/demo/deps/status"
-curl.exe --noproxy "*" -X POST "http://localhost:18081/demo/deps/h2"
+curl.exe --noproxy "*" -X POST "http://localhost:18081/demo/deps/all"
+# 拿返回的 traceId 去读口对账
+curl.exe --noproxy "*" "http://localhost:17890/api/traces?traceId=<上一步的 traceId>"
 ```
 
 **降级时端点仍然返回 HTTP 200**，而且 `reason` 分三种说法（`not-ready` / `call-failed` /
 `not-registered`）——「这个依赖没起来」是可预期的正常状态（MySQL 尤其如此），
 500 会让人分不清"依赖没起来"与"服务坏了"。进程照常启动，不重试。
 
-**四个坑**：
+**六个坑**：
 
-1. **H2 与 MySQL 在图上长得一模一样**：都只产生一条 `scopeName=jdbc` 的 CLIENT span。
+1. **Kafka 用的是 ZK 模式，不是 KRaft**。KRaft 在这台 Windows 上**起不来**：
+   `KafkaRaftManager` 把 `@metadata-0/quorum-state.tmp` 改名成 `quorum-state` 时，
+   源文件仍被本进程持有句柄，Windows 拒绝该 rename。ZK 模式不走那条状态文件。
+   所以 demo-app 内嵌的是 **broker + ZooKeeper 两个进程内角色**，仍然零外部进程。
+2. **H2 与 MySQL 在图上长得一模一样**：都只产生一条 `scopeName=jdbc` 的 CLIENT span。
    H2 是内存库、没有网络连接，所以**没有 SERVER span**；MySQL 的线协议层 agent 也没仪表化。
    → 区分靠 **SQL 里的表名**（`demo_h2_order` / `demo_mysql_order`），span name 就是 SQL。
-2. **别用 starter**。Spring Boot 管理的 Lettuce 6.x / spring-kafka 落在仪表化支持范围外，
-   **静默不生效** —— 所以 H2 也只引驱动不引 `spring-boot-starter-jdbc`。
-3. **`scopeName` 全一样** → 调用的不是客户端类（例如错用了 `MockProducer`）。
-4. **`/demo/stats` 里 `depCalls` 与 `depFailures` 分开** ——
+3. **别用 starter**。Spring Boot 管理的 Lettuce 6.x / spring-kafka 落在仪表化支持范围外，
+   **静默不生效** —— 所以 H2/MySQL 也只引驱动不引 JDBC starter。
+4. **`scopeName` 全一样** → 调用的不是客户端类（例如错用了 `MockProducer`）。
+5. **`/demo/stats` 里 `depCalls` 与 `depFailures` 分开** ——
    「少了一条 CLIENT span」可能是没埋点，也可能是库没起来，混成一个数就分不出来了。
+6. **gRPC 只 `assign()` 不 `subscribe()`**（Kafka 的 consumer），
+   且 gRPC 用**真端口**——进程内直调不会产生 SERVER span，而"两侧都有 span"正是那一跳的理由。
+
+## 每秒一个真实计数（`demo.per_second.*`）
+
+demo-app 起一个**单线程、固定 1 秒**的定时任务，把**这一秒的增量**写成三个指标点：
+
+| 指标 | 含义 |
+| --- | --- |
+| `demo.per_second.requests` | 这一秒的顶层请求数（`spans - childSpans` 的增量） |
+| `demo.per_second.spans` | 这一秒的全部 span 数（含子 span） |
+| `demo.per_second.metric_points` | 这一秒写入的指标点数 |
+
+理由（ADR-6 第八节第 6 条）：**业务指标的历史归业务层自己滚点**，本地存储不替业务缓存历史。
+demo-app 就是这个"业务层"。**不发假数据** —— 没有请求时它就该是 0，那是真实的事实。
+
+**为什么不用 gauge 回调**：回调是采集时轮询的，不需要定时器；而"每秒一个点"是**写入**动作，
+没人定时发就没有点。所以用的是**同步 gauge**（`set()` 一次写一个点）。
+
+### 一个必须知道的副作用：跑一天后会开始淘汰
+
+86400 点/天 × 3 个指标 ≈ **26 万点/天**，而 `rows.metrics` 的默认水位是 **200000**。
+所以**跑满一天之后就会开始淘汰行**，`self.html` 上的「已淘汰行数」会持续增长。
+
+**这是水位在正常工作，不是故障。** 它是"有界存储"这个设计在按预期生效。
+
+这个任务也让指标页的趋势图第一次有了真实数据源：
+`/api/metrics?name=demo.per_second.requests&limit=2000` 会返回上千个点，
+图会按像素列降采样并写明降采样比例。
 
 ## 端到端对账的口径
 
@@ -153,11 +189,16 @@ demo-app/
     │   ├── java/io/github/fulizhe/otelstore/demo/
     │   │   ├── DemoApplication.java          入口 + 各个 @Bean
     │   │   ├── stats/GeneratedSignals.java   本应用造了多少（脱离 Spring 可单测）
+    │   │   ├── metrics/PerSecondMetrics.java 每秒一个真实计数（业务层自己滚点）
     │   │   ├── deps/                         五类外部依赖的探测与调用
     │   │   │   ├── DepStatus.java            ready + detail 不可分开
     │   │   │   ├── DependencyProbe.java      探测接口（key/title/embedded/probe）
     │   │   │   ├── DepsRegistry.java         启动时探测一次，异常压成降级
     │   │   │   ├── H2Dependency.java         内存库，裸 JDBC，不引 starter
+    │   │   │   ├── RedisDependency.java      内嵌服务端 + 裸 Jedis
+    │   │   │   ├── KafkaDependency.java      内嵌 broker + 内嵌 ZooKeeper（ZK 模式）
+    │   │   │   ├── GrpcDependency.java       真端口 Netty server，手搓 descriptor
+    │   │   │   ├── MysqlDependency.java      唯一外部依赖，连不上就降级
     │   │   │   └── DepsDemoService.java      调用 + 降级响应（**不开自己的 span**）
     │   │   └── web/
     │   │       ├── DemoSignalController.java 造信号的全部端点

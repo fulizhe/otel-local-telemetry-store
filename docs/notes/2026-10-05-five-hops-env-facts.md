@@ -15,6 +15,36 @@ javap -verbose -cp "$env:USERPROFILE\.m2\repository\org\apache\kafka\kafka_2.13\
 结果：**`major version: 52`**。Kafka 那一跳保留，五跳成立。
 （`kafka_2.13` 是本项目**唯一**需要从 Maven Central 新下载的包 —— 这是 Docker Hub 不通的直接后果。）
 
+## Kafka 那一跳：KRaft 在 Windows 上起不来，改用 ZK 模式（2026-10-06 实测）
+
+原计划是 KRaft 单节点。实测**不成立**：
+
+- `kafka_2.13:2.7.1` 里**根本没有 KRaft broker** —— `kafka.server.KafkaRaftServer`
+  与 `kafka.tools.StorageTool` 都是 **2.8.0** 才有的类。2.7 只有 Raft 元数据 quorum。
+- 换 `2.8.2`（字节码实测仍是 **52**）后类都在了，但 **broker 在这台 Windows 上起不来**：
+
+```
+java.nio.file.FileSystemException: ...\logs\@metadata-0\quorum-state.tmp -> ...\quorum-state:
+  另一个程序正在使用此文件，进程无法访问。
+	at kafka.raft.KafkaRaftManager.buildRaftClient(RaftManager.scala:229)
+	at kafka.server.KafkaRaftServer.<init>(KafkaRaftServer.scala:70)
+```
+
+`FileBasedStateStore.rewriteStateFile` 把 `quorum-state.tmp` 改名成 `quorum-state` 时，
+源文件仍被本进程持有句柄，Windows 拒绝该 rename（atomic move 的 fallback 也一样失败）。
+Kafka 官方本就不支持 broker 跑在 Windows 上。**这是平台限制，不是配置问题。**
+
+**改用 ZK 模式**（`kafka.server.KafkaServer` + 进程内 `org.apache.zookeeper.server.ZooKeeperServer`
++ `NIOServerCnxnFactory`）。实测**能起能收发**，`KafkaDependencyTest` 里真的起了一个 broker
+并往返一条消息（约 3~7 秒，起完即关）。ZooKeeper 随 `kafka_2.13` 传递进来（3.5.9），
+但因为直接起它，所以显式声明了。
+
+**别的 KRaft 细节**（将来 Linux 上想换回去时用得上）：
+`StorageTool.formatCommand(PrintStream, Seq<String>, MetaProperties, boolean)` 的第二个参数
+**不是** `-t/-c` 参数表而是**日志目录表** —— 把 `-t <id> -c <file>` 喂进去会被当成三个目录名，
+报 `Unable to create storage directory <file>`。格式化要手写 `meta.properties`
+（`MetaProperties.apply(clusterId, nodeId).toProperties()`，键 `node.id / version / cluster.id`）。
+
 ## 本地 m2 已有的包（`~/.m2/repository`）
 
 | 用途 | 坐标 | 已确认的版本 |

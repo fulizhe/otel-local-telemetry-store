@@ -32,6 +32,18 @@ public final class GeneratedSignals {
 
     private final long startedAtMs = System.currentTimeMillis();
 
+    /**
+     * 每秒计数用的"上一秒读数"。{@link #drainPerSecondDelta()} 与它一起被
+     * {@code perSecondLock} 保护 —— 定时任务与请求线程会同时碰这几个数。
+     */
+    private final Object perSecondLock = new Object();
+    private long prevSpans;
+    private long prevChildSpans;
+    private long prevMetricPoints;
+
+    /** 最近一次发出的每秒计数，给 {@code /demo/stats} 看，方便验收时不用等指标端点。 */
+    private volatile Map<String, Long> lastPerSecond = new LinkedHashMap<String, Long>();
+
     /** 五类依赖的 key，声明在这里是为了让计数与依赖清单共用同一个来源。 */
     public static final String[] DEP_KEYS = {"h2", "redis", "kafka", "grpc", "mysql"};
 
@@ -64,6 +76,54 @@ public final class GeneratedSignals {
             counters.put(key, c);
         }
         c.incrementAndGet();
+    }
+
+    /**
+     * 取走"自上次调用以来"的增量，并把读数推进到当下。
+     *
+     * <p>三个量的口径：
+     * <ul>
+     *   <li>{@code requests} = 这一秒新造的<b>顶层</b> span 数（每条业务请求一个）</li>
+     *   <li>{@code spans} = 这一秒新造的<b>全部</b> span 数（含子 span）</li>
+     *   <li>{@code metric_points} = 这一秒写入的指标点数</li>
+     * </ul>
+     *
+     * <p><b>计数回退要夹到 0</b>：{@code reset()} 会把计数清零，而下一次 tick 读到的
+     * 值就小于上一次 —— 直接相减会发出一个负数。负的"每秒请求数"比不发更坏，
+     * 因为它会在趋势图上画出一个不存在的下跌。
+     */
+    public Map<String, Long> drainPerSecondDelta() {
+        synchronized (perSecondLock) {
+            final long s = spans.get();
+            final long c = childSpans.get();
+            final long mp = metricPoints.get();
+
+            // spans 计的是**全部** span（子 span 也走 addSpan），所以顶层请求数要减掉子 span
+            final long dRequests = nonNegative(s - c, prevSpans - prevChildSpans);
+            final long dSpans = nonNegative(s, prevSpans);
+            final long dMetricPoints = nonNegative(mp, prevMetricPoints);
+
+            prevSpans = s;
+            prevChildSpans = c;
+            prevMetricPoints = mp;
+
+            final Map<String, Long> d = new LinkedHashMap<String, Long>();
+            d.put("requests", Long.valueOf(dRequests));
+            d.put("spans", Long.valueOf(dSpans));
+            d.put("metric_points", Long.valueOf(dMetricPoints));
+            lastPerSecond = d;
+            return d;
+        }
+    }
+
+    /** 计数被 reset 过时给 0，而不是给负数。 */
+    private static long nonNegative(final long current, final long previous) {
+        return current >= previous ? current - previous : 0L;
+    }
+
+    /** 最近一次发出的每秒计数（验收时看这个就够了，不必去翻指标端点）。 */
+    public Map<String, Long> lastPerSecond() {
+        return new LinkedHashMap<String, Long>(lastPerSecond);
     }
 
     public void addSpan(final boolean error, final boolean slow, final boolean child) {
@@ -126,6 +186,7 @@ public final class GeneratedSignals {
         final Map<String, Object> failures = new LinkedHashMap<String, Object>();
         m.put("depCalls", flatten(depCalls));
         m.put("depFailures", flatten(depFailures));
+        m.put("lastPerSecond", lastPerSecond());
         return m;
     }
 

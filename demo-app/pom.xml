@@ -29,6 +29,16 @@
     <java.version>8</java.version>
     <!-- 必须与 agent 内嵌的 SDK 版本一致，否则应用侧 API 与 agent 侧 SDK 不同源 -->
     <otel.api.version>1.66.0</otel.api.version>
+    <!--
+      Kafka broker（KRaft 单节点）。2.8.2 是**带 in-process KRaft broker 的最低一代**：
+      2.7 只有 Raft 元数据 quorum，没有 KafkaRaftServer / StorageTool。
+      broker 字节码实测 52，仍支持 Java 8。
+    -->
+    <kafka.version>2.8.2</kafka.version>
+    <!-- gRPC：真端口 Netty server + 手搓 descriptor，不用 protoc。1.58.0 在仪表化支持范围内 -->
+    <grpc.version>1.58.0</grpc.version>
+    <!-- MySQL 驱动：唯一外部依赖那一跳。8.0.26 字节码实测 52（8.0.33 起上到 55） -->
+    <mysql.version>8.0.26</mysql.version>
   </properties>
 
   <dependencies>
@@ -97,6 +107,92 @@
         ready=false 了，读起来像"Redis 起不来"，真因却是依赖被排没了。
         这就是"降级掩盖了配置错误"：最难查的一类，所以测试直接跑真的探测。
       -->
+    </dependency>
+
+    <!--
+      Kafka：**内嵌 broker + 内嵌 ZooKeeper**（都在进程内，零外部进程）。
+
+      想用 KRaft 的话会撞墙：KRaft 在这台 Windows 上起不来 ——
+      kafka.raft.KafkaRaftManager 把 @metadata-0/quorum-state.tmp 改名成 quorum-state 时
+      源文件仍被本进程持有句柄，Windows 拒绝该 rename。所以走 ZK 模式。
+
+      版本钉 2.8.2：ZK 模式的末代之一，broker 字节码实测 52，仍支持 Java 8。
+
+      **不用 spring-kafka**：它管理的 kafka-clients 3.x 落在 agent 2.32.0 的
+      仪表化支持范围外（支持到 2.5+），会**静默不生效**。
+    -->
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka_2.13</artifactId>
+      <version>${kafka.version}</version>
+      <exclusions>
+        <!--
+          Kafka 用 log4j 1.x 打日志。本应用有 logback —— 两者都在时日志走 log4j，
+          demo-app 的日志格式配置整个失效（而 agent 正是把日志改到 stderr 上的，
+          格式一乱验收信号就没法读了）。
+        -->
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-log4j12</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <!--
+      ZooKeeper：我们**直接**起它（内嵌），所以显式声明而不是靠 kafka_2.13 的传递依赖。
+      版本与 kafka_2.13:2.8.2 拉进来的那个一致，避免两条路径各带一个版本。
+    -->
+    <dependency>
+      <groupId>org.apache.zookeeper</groupId>
+      <artifactId>zookeeper</artifactId>
+      <version>3.5.9</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-log4j12</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>ch.qos.logback</groupId>
+          <artifactId>logback-classic</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>ch.qos.logback</groupId>
+          <artifactId>logback-core</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!--
+      gRPC：**真端口的 Netty server**（不用 protoc）。
+
+      **不用 protoc / protobuf 代码生成**：手搓 MethodDescriptor<byte[],byte[]> 加
+      一个 byte[] identity marshaller 就够了，而它换来的是**两侧都产生 span**
+      （CLIENT 由调用方、SERVER 由服务端），是五跳里链最深的一条。
+
+      版本 1.58.0：在 agent 2.32.0 的 gRPC 仪表化支持范围（1.6+）内。
+    -->
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-netty-shaded</artifactId>
+      <version>${grpc.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-stub</artifactId>
+      <version>${grpc.version}</version>
+    </dependency>
+
+    <!--
+      MySQL：**五跳里唯一的外部依赖**（ADR-7 —— 没有可嵌入的 MySQL 服务端实现）。
+      连本机已在跑的实例，连不上就降级。
+
+      只引驱动，不引 MySQL 方言的 JDBC starter：与 H2 同一条理由 ——
+      starter 会把连接池拖进来，而连接池的获取本身会被仪表化成 span，
+      图上多出来的不是想展示的东西。
+    -->
+    <dependency>
+      <groupId>mysql</groupId>
+      <artifactId>mysql-connector-java</artifactId>
+      <version>${mysql.version}</version>
     </dependency>
 
     <dependency>

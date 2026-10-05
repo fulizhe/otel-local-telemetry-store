@@ -4,7 +4,10 @@ import io.github.fulizhe.otelstore.demo.deps.DepStatus;
 import io.github.fulizhe.otelstore.demo.deps.DependencyProbe;
 import io.github.fulizhe.otelstore.demo.deps.DepsDemoService;
 import io.github.fulizhe.otelstore.demo.deps.DepsRegistry;
+import io.github.fulizhe.otelstore.demo.deps.GrpcDependency;
 import io.github.fulizhe.otelstore.demo.deps.H2Dependency;
+import io.github.fulizhe.otelstore.demo.deps.KafkaDependency;
+import io.github.fulizhe.otelstore.demo.deps.MysqlDependency;
 import io.github.fulizhe.otelstore.demo.deps.RedisDependency;
 import io.github.fulizhe.otelstore.demo.stats.GeneratedSignals;
 import java.util.ArrayList;
@@ -15,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * 演示应用入口。
@@ -25,8 +29,12 @@ import org.springframework.context.annotation.Bean;
  * （见 {@code docs/notes/2026-10-04-r0-extension-points.md} 第五节）。
  *
  * <p>没挂 agent 也能起，此时 OTel 是 no-op，页面照常工作。
+ *
+ * <p>{@code @EnableScheduling} 是给"每秒一个真实计数"那个任务用的
+ * （ADR-6 第八节第 6 条：业务指标的历史归业务层自己滚点）。
  */
 @SpringBootApplication
+@EnableScheduling
 public class DemoApplication {
 
     private static final Logger LOG = LoggerFactory.getLogger("otelstore.demo.deps");
@@ -53,6 +61,21 @@ public class DemoApplication {
         return new RedisDependency();
     }
 
+    @Bean
+    public KafkaDependency kafkaDependency() {
+        return new KafkaDependency();
+    }
+
+    @Bean
+    public GrpcDependency grpcDependency() {
+        return new GrpcDependency();
+    }
+
+    @Bean
+    public MysqlDependency mysqlDependency() {
+        return new MysqlDependency();
+    }
+
     /**
      * 五类依赖的探测清单，<b>按页面上展示的顺序</b>。
      *
@@ -62,39 +85,11 @@ public class DemoApplication {
      */
     @Bean
     public List<DependencyProbe> dependencyProbes(final H2Dependency h2,
-                                                  final RedisDependency redis) {
-        return new ArrayList<DependencyProbe>(Arrays.asList(
-                h2,
-                redis,
-                notYetWired(DepsRegistry.KAFKA, "Kafka（进程内 KRaft 单节点）", true),
-                notYetWired(DepsRegistry.GRPC, "gRPC（进程内 Netty server）", true),
-                notYetWired(DepsRegistry.MYSQL, "MySQL（外部实例）", false)));
-    }
-
-    private static DependencyProbe notYetWired(final String key, final String title,
-                                               final boolean embedded) {
-        return new DependencyProbe() {
-            @Override
-            public String key() {
-                return key;
-            }
-
-            @Override
-            public String title() {
-                return title;
-            }
-
-            @Override
-            public boolean embedded() {
-                return embedded;
-            }
-
-            @Override
-            public DepStatus probe() {
-                return DepStatus.notReady(key, title, embedded,
-                        "还没接入：这一跳由后续票接上（H2 已通，其余四项在铺开中）");
-            }
-        };
+                                                  final RedisDependency redis,
+                                                  final KafkaDependency kafka,
+                                                  final GrpcDependency grpc,
+                                                  final MysqlDependency mysql) {
+        return new ArrayList<DependencyProbe>(Arrays.asList(h2, redis, kafka, grpc, mysql));
     }
 
     @Bean
@@ -115,7 +110,10 @@ public class DemoApplication {
     public DepsDemoService depsDemoService(final DepsRegistry registry,
                                            final H2Dependency h2,
                                            final RedisDependency redis,
+                                           final KafkaDependency kafka,
+                                           final GrpcDependency grpc,
+                                           final MysqlDependency mysql,
                                            final GeneratedSignals stats) {
-        return new DepsDemoService(registry, h2, redis, stats);
+        return new DepsDemoService(registry, h2, redis, kafka, grpc, mysql, stats);
     }
 }
