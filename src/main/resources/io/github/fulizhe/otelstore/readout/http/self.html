@@ -31,17 +31,24 @@
 
   <div class="card">
     <h2>扩展自身</h2>
-    <div class="note">
-      <b>自监控指标</b>（agent 自己的队列深度、采集/解码计数、异常数）还没接上 ——
-      正在做 <code>issue #8</code>，端点是 <code>/api/self</code>。
+    <table><tbody id="runtime"><tr><td colspan="2" style="color:var(--dim)">–</td></tr></tbody></table>
+    <div class="note" style="margin-top:12px">
+      <b>自监控指标</b>（agent 自己的那批）<b>不入库，也不过缓冲</b> —— 被前缀过滤掉的只<b>计数</b>。
       <br>
-      <b>扩展自己的日志</b>还没接上 —— 正在做 <code>issue #9</code>，端点是 <code>/api/self-log</code>。
+      理由：2026-10-05 实测 agent 2.32.0，那批数据<b>默认配置下根本不会到达</b>
+      （315 份仪表化清单里只有 <code>runtime-telemetry</code> 对得上，而它是
+      <code>2.32.0-alpha</code> 且默认关）。为一个不会到达的数据建缓存没有意义。
       <br>
-      这两块<b>故意留空而不是摆占位数字</b>：空槽位会让人知道还没做，
-      假数字会被人拿去判断系统健康。
+      <b>所以这一页没有一个"自监控指标"图表</b>，而是有下面那张队列表 ——
+      它回答的是<b>同一个问题</b>（"是业务没产生数据，还是采集/落盘这一段就丢了"），
+      而且一定拿得到。详见 <code>docs/adr/adr-06-readout-http-surface.md</code> 第八节。
     </div>
     <div class="foot">
-      在那之前，扩展自己的日志在<b>启动日志</b>里（应用的标准输出/错误），
+      <b>业务指标的历史不归我们</b>：想要"最近半小时"的曲线，
+      <b>业务层要自己每秒发一个点</b>，我们照常像收任何业务指标一样收下、只存不缓存。
+      <br>
+      <b>扩展自己的日志</b>还没接上 —— 正在做 <code>issue #9</code>，端点是 <code>/api/self-log</code>。
+      在那之前，扩展自己的日志在<b>启动日志</b>里（应用的标准错误），
       里面能看到 <code>已注册三条采集管线</code>、存储降级原因、限速告警。
     </div>
   </div>
@@ -56,8 +63,9 @@
     </div>
     <table style="margin-top:16px">
       <thead><tr><th>队列</th><th class="num">offered</th><th class="num">drained</th>
-        <th class="num">dropped</th><th class="num">sinkErrors</th><th class="num">backlog</th></tr></thead>
-      <tbody id="queues"><tr><td colspan="6" style="color:var(--dim)">–</td></tr></tbody>
+        <th class="num">dropped</th><th class="num">sinkErrors</th><th class="num">backlog</th>
+        <th class="num">批次</th><th class="num">容量</th></tr></thead>
+      <tbody id="queues"><tr><td colspan="8" style="color:var(--dim)">–</td></tr></tbody>
     </table>
     <table style="margin-top:16px">
       <thead><tr><th>环形文件</th><th class="num">写游标</th><th class="num">覆盖轮次</th>

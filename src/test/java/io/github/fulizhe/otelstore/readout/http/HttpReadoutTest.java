@@ -224,16 +224,153 @@ class HttpReadoutTest {
     }
 
     @Test
-    @DisplayName("自监控页写明 #8/#9 还没接上，而不是摆占位数字")
+    @DisplayName("自监控页：如实说明没有自监控指标那块，并给出扩展自身的运行时事实")
     void selfPageIsHonestAboutWhatIsMissing(@TempDir final File dataDir) throws Exception {
         try (LocalStore store = storeWithOneSpan(dataDir);
              HttpReadout readout = start(dataDir, 0, false, null, store)) {
             final String self = get(readout.getActualPort(), "/self.html").body;
-            assertTrue(self.contains("还没接上"), "没做的部分要写明没做：" + self);
-            assertTrue(self.contains("#8") && self.contains("#9"), "要给出 issue 号：" + self);
-            assertTrue(self.contains("/api/self") && self.contains("/api/self-log"),
-                    "要给出将来的端点名：" + self);
+            // 取消 /api/self 之后这一页**没有**自监控指标图表 —— 所以它必须说清为什么
+            assertTrue(self.contains("不过缓冲"), "要说清不入库也不过缓冲：" + shortTail(self));
+            assertTrue(self.contains("2.32.0-alpha"), "要给实测依据，别只下结论：" + shortTail(self));
+            assertTrue(self.contains("id=\"runtime\""), "要有一块展示运行时事实：" + shortTail(self));
+            // 降级原因由服务端给，页面**不许猜**
+            assertFalse(self.contains("数据目录不可写"),
+                    "页面不许硬编码降级原因 —— 可能是路径不是目录/权限/占用/建表失败：" + shortTail(self));
+            assertTrue(self.contains("id=\"config\""), "生效配置要留在这一页：" + shortTail(self));
+            assertTrue(self.contains("id=\"queues\""), shortTail(self));
+            // #9 还没做，必须如实说
+            assertTrue(self.contains("#9") && self.contains("/api/self-log"),
+                    "#9 还没接上，要写明：" + shortTail(self));
         }
+    }
+
+    /**
+     * {@code /api/self} 是**永远不提供**，不是"还没做"。
+     *
+     * <p>它从未实现过，所以取消它不构成破坏性变更 —— 而这正是「端点清单封闭」的体现：
+     * 清单里没有的东西，加钱也不会有。
+     */
+    @Test
+    @DisplayName("/api/self 是永远不提供（不是还没做）：清单里没有它，加钱也不会有")
+    void apiSelfIsForeverAbsent(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final int port = readout.getActualPort();
+            for (final String p : new String[]{"/api/self", "/api/self/"}) {
+                final Response r = get(port, p);
+                assertEquals(404, r.status, p + " 必须 404");
+                assertTrue(r.body.contains("\"error\":\"not_found\""), r.body);
+            }
+            assertEquals(404, get(port, "/api/self-log").status, "/api/self-log 是还没做（#9）");
+        }
+    }
+
+    /** {@code limit} 的上限按用途分档：列表 200、日志尾部 500、指标点 2000（ADR-6 第三节）。 */
+    @Test
+    @DisplayName("limit 上限按端点分档：span/log 200，指标点 2000；缺省仍 20")
+    void limitsAreCappedPerEndpointClass(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = new LocalStore(config(dataDir, 0, false, null))) {
+            for (int i = 0; i < 250; i++) {
+                store.store(spanWithOtlpPayload("s" + i, "abcdef0123456789abcdef0123456789"));
+            }
+            for (int i = 0; i < 2300; i++) {
+                store.store(new MetricPointEntry("m", "d", "ms",
+                        MetricPointEntry.MetricKind.HISTOGRAM,
+                        1700000000000000000L + i * 1000000L, null, "s", "1",
+                        Collections.<KeyValue>emptyList(), Double.NaN, 1L, 1.0d, ""));
+            }
+            try (HttpReadout readout = start(dataDir, 0, false, null, store)) {
+                final int port = readout.getActualPort();
+                assertEquals(200, rowsIn(get(port, "/api/traces?limit=5000").body), "列表仍是 200");
+                assertEquals(2000, rowsIn(get(port, "/api/metrics?limit=5000").body), "指标点抬到 2000");
+                // 抬上限不许顺手抬缺省 —— 缺省 20 是"打开就有用"的那个值
+                assertEquals(20, rowsIn(get(port, "/api/metrics").body), "指标缺省仍是 20");
+                assertEquals(20, rowsIn(get(port, "/api/traces").body), "列表缺省仍是 20");
+            }
+        }
+    }
+
+    /** 数数组里的**顶层**对象个数。顶层对象的左括号紧跟在 '[' 或 ',' 后面 —— 
+     *  不能简单数 '{'：指标行里还有一个嵌套的 detail 对象，会数成两倍。 */
+    private static int rowsIn(final String body) {
+        assertTrue(body.startsWith("["), "不是数组：" + body);
+        int n = 0;
+        boolean inStr = false;
+        for (int i = 0; i < body.length(); i++) {
+            final char ch = body.charAt(i);
+            if (ch == '"' && (i == 0 || body.charAt(i - 1) != '\\')) {
+                inStr = !inStr;
+            } else if (ch == '{' && !inStr && i > 0
+                    && (body.charAt(i - 1) == ',' || body.charAt(i - 1) == '[')) {
+                n++;
+            }
+        }
+        return n;
+    }
+    @Test
+    @DisplayName("/api/summary 多出 5 个运行时事实：健康时给 null 而不是缺键")
+    void summaryCarriesRuntimeFacts(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final String body = get(readout.getActualPort(), "/api/summary").body;
+            assertTrue(body.contains("\"actualPort\":"), body);
+            assertTrue(body.contains("\"uptimeMs\":"), body);
+            assertTrue(body.contains("\"startedAt\":"), body);
+            assertTrue(body.contains("\"agentVersion\":"),
+                    "不在 agent 里运行时 agentVersion 必须是 null 而不是缺键：" + body);
+            assertTrue(body.contains("\"storeDegradedReason\":null"),
+                    "健康时给 null 而不是缺键 —— 缺键分不清'这版没有'与'现在健康'：" + body);
+        }
+    }
+
+    /**
+     * 存储层开不起来时读口**照起**，并给出具体原因（ADR-6 第一节）。
+     *
+     * <p>原来的行为是"存储不可用就不起读口"，只有一句代码注释、没有任何决策记录；
+     * 而它导致的最要紧的后果是：数据目录不可写这种常见部署事故发生时，
+     * 排查的人**连不上读口**，只能去翻应用的 stderr。
+     */
+    @Test
+    @DisplayName("存储层开不起来时读口照起，并把降级原因报出来")
+    void readoutStartsAndReportsReasonWhenStoreIsUnavailable(@TempDir final File dataDir) throws Exception {
+        // dataDir 指向一个**已存在的普通文件** —— 存储层必然开不起来，而这是常见的部署事故
+        final File blocked = new File(dataDir, "not-a-dir");
+        assertTrue(blocked.createNewFile(), "造不出那个挡路的文件");
+
+        final Map<String, String> props = new LinkedHashMap<String, String>();
+        props.put(LocalStoreConfig.PREFIX + "dataDir", blocked.getAbsolutePath());
+        props.put(LocalStoreConfig.PREFIX + "host", "127.0.0.1");
+        final LocalStoreConfig cfg = LocalStoreConfig.from(props);
+        final ReadoutQueries queries = new ReadoutQueries(cfg, null, null);
+        queries.setStoreDegradedReasonSupplier(new java.util.function.Supplier<String>() {
+            @Override
+            public String get() {
+                return "java.nio.file.FileSystemException: 不是一个目录";
+            }
+        });
+        try (HttpReadout readout = HttpReadout.start(cfg, queries, blocked)) {
+            final String body = get(readout.getActualPort(), "/api/summary").body;
+            assertTrue(body.contains("\"store\":null"),
+                    "没有存储要说清'没有存储'而不是空对象：" + body);
+            assertTrue(body.contains("不是一个目录"),
+                    "降级原因必须出现在读口，栈仍然只进扩展自己的日志：" + body);
+            assertTrue(body.contains("\"actualPort\":"),
+                    "存储不可用时读口照起，所以 actualPort 也要有：" + body);
+            // 队列那一段仍然是活的 —— "没有存储"不等于"什么都没有"
+            assertTrue(body.contains("\"queues\":"), body);
+        }
+    }
+
+    /** 异常摘要只给类型 + message，**不含栈**（ADR-6 第六节）。 */
+    @Test
+    @DisplayName("降级原因不含栈")
+    void degradedReasonCarriesNoStack(@TempDir final File tmp) {
+        final Exception e = new IllegalStateException("根因在这里");
+        final String described = io.github.fulizhe.otelstore.agentext.TapHub.describe(e);
+        assertTrue(described.contains("IllegalStateException"), described);
+        assertTrue(described.contains("根因在这里"), described);
+        assertFalse(described.contains("\tat "), "响应里绝不能含栈：" + described);
+        assertEquals("", io.github.fulizhe.otelstore.agentext.TapHub.describe(null));
     }
 
     @Test
@@ -456,7 +593,8 @@ class HttpReadoutTest {
                 assertEquals(200, get(port, path).status, path + " 用 GET 应当可达");
             }
             // 还没实现的必须 404 而不是 200 空壳 —— 否则会以为它通了。
-            // /api/self 与 /api/self-log 是后两段的事；/api/payload 则是**永远不提供**的那个
+            // /api/self 是**永远不提供**（取消前从未实现）；/api/self-log 是还没做（#9）；
+            // /api/payload 同样是**永远不提供**的那个
             // （ADR-6 第七节）
             for (final String path : new String[]{"/api/self", "/api/self-log", "/api/payload/1"}) {
                 assertEquals(404, get(port, path).status, path + " 还没实现，必须是 404");

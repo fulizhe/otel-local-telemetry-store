@@ -47,6 +47,15 @@ public final class TapHub implements AutoCloseable {
     private final RecordQueue<Object> metrics;
     /** 存储层；开不起来时为 null，三条 sink 退化为空实现。 */
     private final LocalStore store;
+    /**
+     * 存储层开不起来的原因；能开时为 null。
+     *
+     * <p>存在的理由：这一条以前只出现在扩展自己的日志里，于是读口只能报"没有存储"，
+     * 而**路径不是目录、权限被拒、文件被占用、建表失败的下一步完全不同**。
+     * 读口照起并给出真实原因，是 ADR-6 第一节新立的那条。
+     */
+    private String degradedReason;
+
     /** 周期汇总的调度器；{@code close()} 时关掉。 */
     private final java.util.concurrent.ScheduledExecutorService heartbeat;
 
@@ -107,7 +116,12 @@ public final class TapHub implements AutoCloseable {
      * <p>失败最常见的原因是数据目录不可写（权限、路径被文件占了）。那属于"部署没配好"，
      * 不属于"应用有问题"—— 应用必须照常起来，我们只是没得存。
      */
-    private static LocalStore openStore(final LocalStoreConfig config) {
+    /**
+     * 开存储层；开不起来就退化成只计数（ADR-1：绝不让扩展的问题变成应用起不来）。
+     *
+     * <p>失败原因落到 {@link #degradedReason} 供读口报出 —— 栈仍然只进扩展自己的日志。
+     */
+    private LocalStore openStore(final LocalStoreConfig config) {
         try {
             final LocalStore opened = new LocalStore(config);
             LOGGER.info("[otel-local-telemetry-store] 存储层就绪 dataDir=" + config.getDataDir()
@@ -116,10 +130,30 @@ public final class TapHub implements AutoCloseable {
                     + config.getRowsMetrics());
             return opened;
         } catch (final Exception e) {
+            degradedReason = describe(e);
             LOGGER.warning("[otel-local-telemetry-store] 存储层开不起来，本次只计数不落盘："
-                    + e + "（数据目录=" + config.getDataDir() + "）");
+                    + describe(e) + "（数据目录=" + config.getDataDir() + "）");
             return null;
         }
+    }
+
+    /**
+     * 异常的可读摘要：类型 + message，**不含栈**。
+     *
+     * <p>栈进扩展自己的日志（限速打印）；读口侧要的是一句话，
+     * 而"路径不是目录 / 权限被拒 / 文件被占用 / 建表失败"的下一步完全不同（ADR-6 第一节）。
+     */
+    public static String describe(final Throwable e) {
+        if (e == null) {
+            return "";
+        }
+        final String msg = e.getMessage();
+        return e.getClass().getName() + (msg == null || msg.isEmpty() ? "" : ": " + msg);
+    }
+
+    /** 存储层开不起来的原因；能开时为 {@code null}。 */
+    public String degradedReason() {
+        return degradedReason;
     }
 
     private static java.util.function.Consumer<Object> spanSink(final LocalStore store) {

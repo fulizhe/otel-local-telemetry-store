@@ -44,19 +44,58 @@ public final class ReadoutQueries {
      */
     public static final int MAX_LIMIT = 200;
 
+    /**
+     * 指标点的上限，单独一档。
+     *
+     * <p>它是<b>看趋势</b>的：最近半小时 × 每秒一个点就是 1800 条，
+     * 沿用 {@link #MAX_LIMIT} 会让"最近半小时"这个既定用途<b>根本取不出来</b>（ADR-6 第三节）。
+     * 2000 是取整，不是"给多少都行" —— 再往上调要先回答"谁来读这 4000 条"。
+     */
+    public static final int MAX_LIMIT_METRICS = 2000;
+
     private final LocalStoreConfig config;
     private final LocalStore store;
     /** 队列侧快照由 {@code agentext} 提供（队列在那边），用 Supplier 避免 readout 依赖 agentext。 */
     private final Supplier<Map<String, Object>> queuesSnapshot;
+    /**
+     * 存储层开不起来的原因；由 {@code agentext} 提供（同一条理由：队列与降级原因都在那边）。
+     *
+     * <p>ADR-6 第一节：存储不可用时读口**照起**，就是为了把这个原因报出来。
+     */
+    private Supplier<String> storeDegradedReason;
+    /** 本对象创建时刻 = 扩展这一轮的起点，用于 {@code startedAt} 与 {@code uptimeMs}。 */
+    private final long startedAtMs = System.currentTimeMillis();
 
     /**
      * @param store 存储层；为 null 时读口要能说清"没有存储"而不是"没有数据"
      */
     public ReadoutQueries(final LocalStoreConfig config, final LocalStore store,
             final Supplier<Map<String, Object>> queuesSnapshot) {
+        this(config, store, queuesSnapshot, null);
+    }
+
+    /**
+     * @param storeDegradedReason 存储层开不起来的原因；为 null（未提供）时该键报 null。
+     *        保留三参构造是为了让测试不必凭空造一个降级原因。
+     */
+    public ReadoutQueries(final LocalStoreConfig config, final LocalStore store,
+            final Supplier<Map<String, Object>> queuesSnapshot,
+            final Supplier<String> storeDegradedReason) {
         this.config = config;
         this.store = store;
         this.queuesSnapshot = queuesSnapshot;
+        this.storeDegradedReason = storeDegradedReason;
+    }
+
+    /**
+     * 事后挂上降级原因来源。
+     *
+     * <p>不用构造参数的原因：原因只在 {@code TapHub} 开完库之后才知道，
+     * 而查询层要先建好才能被 JMX 那侧取到。用 setter 而不是再加一条构造重载，
+     * 是因为"原因"是这个对象上**唯一**可以后填的东西。
+     */
+    public void setStoreDegradedReasonSupplier(final Supplier<String> supplier) {
+        this.storeDegradedReason = supplier;
     }
 
     /** 存储层是否可用。读口要能区分"没数据"与"没有存储"。 */
@@ -73,9 +112,44 @@ public final class ReadoutQueries {
     public Map<String, Object> summary() {
         final Map<String, Object> m = new LinkedHashMap<String, Object>();
         m.put("config", config.describe());
+        // 下面 4 个是"这个进程的运行时事实"，与 config（生效配置）分属两类 ——
+        // 所以它们**平铺**在顶层，不嵌套成新的一组（那一组会长得很像刚被取消的 /api/self）。
+        m.put("startedAt", Long.valueOf(startedAtMs));
+        m.put("uptimeMs", Long.valueOf(System.currentTimeMillis() - startedAtMs));
+        m.put("agentVersion", agentVersion());
+        // store 为 null 时才有值；健康时为 null 而不是缺键 —— 缺键会让脚本分不清
+        // "这版扩展没有这个字段"与"现在健康"
+        m.put("storeDegradedReason", storeDegradedReason == null ? null : storeDegradedReason.get());
         m.put("queues", queuesSnapshot == null ? null : queuesSnapshot.get());
         m.put("store", storeSnapshot());
         return m;
+    }
+
+    /**
+ * agent jar 的标识；不在 agent 里运行时为 {@code null}。
+ *
+ * <p>来源是 JVM 的 {@code -javaagent:} 启动参数 —— **不是** {@code BuildInfoAgent}
+ * （{@code java.lang.management} 里没有 {@code BuildInfo} 这个类，别被它骗了）。
+ * agent 自己不会把版本写进任何标准位置，而 OTel 的 API 我们在 readout 里不能用（分层规则），
+ * 所以解析启动参数是这里唯一既零依赖又不越界的办法。
+ *
+ * <p>返回的是文件名（通常是 {@code opentelemetry-javaagent-2.32.0.jar}），
+ * 所以它给的是"哪个 agent"，不是严格的版本号 —— 名字里带不带版本取决于发行包怎么命名。
+ */
+    static String agentVersion() {
+        final java.lang.management.RuntimeMXBean bean = java.lang.management.ManagementFactory.getRuntimeMXBean();
+        if (bean == null || bean.getInputArguments() == null) {
+            return null;
+        }
+        for (final String arg : bean.getInputArguments()) {
+            if (arg != null && arg.startsWith("-javaagent:")) {
+                final String path = arg.substring("-javaagent:".length());
+                final int cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+                final String name = cut >= 0 ? path.substring(cut + 1) : path;
+                return name.isEmpty() ? null : name;
+            }
+        }
+        return null;
     }
 
     /** 存储侧快照；没有存储时为 {@code null}（**不是**空 Map —— 两者要能分开）。 */
@@ -203,7 +277,7 @@ public final class ReadoutQueries {
             return null;
         }
         try {
-            return store.recentMetricPoints(metricName, clamp(limit));
+            return store.recentMetricPoints(metricName, clamp(limit, MAX_LIMIT_METRICS));
         } catch (final Exception e) {
             ThrottledLogger.warn("readout-metrics", "读 metric_point 失败 name=" + metricName, e);
             return null;
@@ -370,9 +444,14 @@ public final class ReadoutQueries {
 
     /** 非正数给默认条数，超过上限夹到上限。 */
     private static int clamp(final int limit) {
+        return clamp(limit, MAX_LIMIT);
+    }
+
+    /** 指标点那一档单独封顶；其余端点仍走 {@link #MAX_LIMIT}。 */
+    private static int clamp(final int limit, final int max) {
         if (limit <= 0) {
             return DEFAULT_LIMIT;
         }
-        return Math.min(limit, MAX_LIMIT);
+        return Math.min(limit, max);
     }
 }

@@ -133,7 +133,15 @@ public final class LocalStoreCustomizerProvider implements AutoConfigurationCust
                     public java.util.Map<String, Object> get() {
                         return created.queuesSnapshot();
                     }
-                });
+});
+        // 降级原因也要走 Supplier：它在 agentext 那边（TapHub 开库时才知道），
+        // readout 不该 import agentext（同 queuesSnapshot 的理由）。
+        queries.setStoreDegradedReasonSupplier(new java.util.function.Supplier<String>() {
+            @Override
+            public String get() {
+                return created.degradedReason();
+            }
+        });
         // JMX 是 Phase 4b 唯一的对账口子；Phase 5 之后它仍在（零网络、跨 ClassLoader 唯一通道）
         final boolean jmx = JmxReadout.register(config, created.store(), queries);
         // HTTP 读口：默认开启（ADR-6 第一节）。起不来只降级读口，不影响应用与存储。
@@ -144,7 +152,8 @@ public final class LocalStoreCustomizerProvider implements AutoConfigurationCust
                 + " cappedTracesBytes=" + config.getCappedTracesBytes()
                 + " cappedLogsBytes=" + config.getCappedLogsBytes()
                 + " metricIntervalMs=" + METRIC_INTERVAL_MS
-                + " store=" + (created.store() == null ? "unavailable" : "ready")
+                + " store=" + (created.store() == null
+                ? "unavailable(" + created.degradedReason() + ")" : "ready")
                 + " jmxReadout=" + (jmx ? JmxReadout.OBJECT_NAME : "off")
                 + " httpReadout=" + (http ? "on" : "off"));
         return created;
@@ -153,10 +162,14 @@ public final class LocalStoreCustomizerProvider implements AutoConfigurationCust
     /**
      * 起 HTTP 读口。失败只降级读口 —— 应用照常、数据照存（ADR-1：绝不让读口的问题变成启动失败）。
      *
-     * <p>存储层不可用时**不起**：挂一个只会报"没有存储"的空读口，比没有更容易误导。
+     * <p><b>存储层不可用时也起</b>（ADR-6 第一节新立的那条，覆盖掉原先
+     * "挂一个只会报没有存储的空读口，比没有更容易误导"的判断）：
+     * 排障最需要信息的时候恰恰是最需要读口的时候，而那种情况下原来的行为是
+     * **整个读口不存在**，排查的人只能去翻应用的 stderr。
+     * 一个说清楚"我 degraded 了、原因是 X、队列还在收"的读口，比连不上有用得多。
      */
     private static boolean startHttpReadout(final LocalStoreConfig config, final ReadoutQueries queries) {
-        if (queries == null || !queries.isStoreAvailable()) {
+        if (queries == null) {
             return false;
         }
         try {

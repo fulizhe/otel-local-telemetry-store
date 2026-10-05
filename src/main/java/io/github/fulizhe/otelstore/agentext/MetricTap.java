@@ -40,12 +40,44 @@ final class MetricTap implements MetricExporter {
             return CompletableResultCode.ofSuccess();
         }
         for (final MetricData m : metrics) {
-            if (m != null && !isSelfTelemetry(m)) {
+            if (m == null) {
+                continue;
+            }
+            if (isSelfTelemetry(m)) {
+                // 被前缀过滤掉的那批：按 ADR-6 第八节**只计数，不缓冲**。
+                // 计数是 O(1) 内存，而"过滤掉了多少个点"本身就是排障信息 ——
+                // 静默丢弃会让人以为根本没有自监控指标这个概念。
+                droppedSelfTelemetry.incrementAndGet();
+                lastSelfTelemetryDroppedAt.set(System.currentTimeMillis());
+            } else {
                 queue.offer(m);
             }
         }
         return CompletableResultCode.ofSuccess();
     }
+
+    /** 被前缀过滤掉的自监控指标累计个数；{@code /api/summary} 的 {@code selfTelemetryDropped}。 */
+    public long droppedSelfTelemetry() {
+        return droppedSelfTelemetry.get();
+    }
+
+    /** 最近一次丢弃自监控指标的时刻；从未丢过为 0。 */
+    public long lastSelfTelemetryDroppedAt() {
+        return lastSelfTelemetryDroppedAt.get();
+    }
+
+    /**
+     * 进程内唯一的计数器。
+     *
+     * <p>静态的而不是实例字段：整个进程只注册一个 {@code MetricTap}
+     * （见 {@code LocalStoreCustomizerProvider}），而读口要拿到这个数字就得能跨实例读它 ——
+     * 留一个静态引用比再加一条注入链便宜。若将来真有第二个 reader，
+     * 正确的做法是把它并入 {@code TapHub} 的快照，不是继续加静态字段。
+     */
+    private static final java.util.concurrent.atomic.AtomicLong droppedSelfTelemetry =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong lastSelfTelemetryDroppedAt =
+            new java.util.concurrent.atomic.AtomicLong();
 
     private boolean isSelfTelemetry(final MetricData m) {
         final String scope = m.getInstrumentationScopeInfo() == null

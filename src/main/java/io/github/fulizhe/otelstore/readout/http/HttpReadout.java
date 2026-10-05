@@ -237,7 +237,12 @@ final String path = exchange.getRequestURI().getPath();
                     if (!authorized(exchange)) {
                         return;
                     }
-                    serveJson(exchange, queries.summary());
+                    final Map<String, Object> snapshot = queries.summary();
+                    // actualPort 只能由这里给 —— 它是绑定退让之后才知道的事实，
+                    // 而 queries 在绑定之前就建好了。它与 config.port 不是重复信息：
+                    // 后者是配置值，两者不等就说明退让过（ADR-6 第一节）。
+                    snapshot.put("actualPort", Integer.valueOf(actualPort));
+                    serveJson(exchange, snapshot);
                     return;
                 }
                 if ("/metrics".equals(path)) {

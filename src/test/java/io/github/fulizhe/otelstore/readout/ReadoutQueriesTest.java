@@ -58,7 +58,7 @@ class ReadoutQueriesTest {
     }
 
     @Test
-    @DisplayName("摘要三段齐全，且与启动日志那份是同一份数据")
+    @DisplayName("摘要三段齐全 + 5 个运行时事实，且与启动日志那份是同一份数据")
     void summaryHasAllThreeSections(@TempDir final File dataDir) throws Exception {
         final LocalStoreConfig cfg = config(dataDir);
         try (LocalStore store = new LocalStore(cfg)) {
@@ -68,11 +68,18 @@ class ReadoutQueriesTest {
             final ReadoutQueries q = new ReadoutQueries(cfg, store, constant(queues));
 
             final Map<String, Object> s = q.summary();
-            assertEquals(3, s.size());
+            // 三段（config/queues/store）+ 4 个平铺的运行时事实。actualPort 由 HttpReadout 补
+            // —— 它是绑定退让之后才知道的事实，而查询层在建好之前就存在了。
+            assertEquals(7, s.size());
             assertTrue(s.containsKey("config"), s.keySet().toString());
             assertTrue(s.containsKey("queues"), s.keySet().toString());
             assertTrue(s.containsKey("store"), s.keySet().toString());
-            assertEquals(Long.valueOf(1L), ((Map<?, ?>) s.get("store")).get("spanRows"));
+            // 运行时事实是**平铺**的，不嵌套 —— 嵌套的那一组会长得很像被取消的 /api/self
+            for (final String k : new String[]{
+                    "startedAt", "uptimeMs", "agentVersion", "storeDegradedReason"}) {
+                assertTrue(s.containsKey(k), "缺运行时事实 " + k + "：" + s.keySet());
+            }
+            assertTrue(s.get("uptimeMs") instanceof Long, String.valueOf(s.get("uptimeMs")));
             assertEquals(queues, s.get("queues"), "队列那一段原样透传，读口不加工");
         }
     }

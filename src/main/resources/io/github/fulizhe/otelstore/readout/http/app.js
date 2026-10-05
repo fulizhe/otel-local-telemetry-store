@@ -173,19 +173,21 @@ var Otl = (function () {
    */
   function quantityOf(row) {
     if (row.dataType === 'GAUGE') {
-      return num(row.metricValue) === null ? null : { key: '值', get: function (r) { return r.metricValue; } };
+      return numOrNull(row.metricValue) === null ? null : { key: '值', get: function (r) { return r.metricValue; } };
     }
     if (row.dataType === 'SUM') {
-      return num(row.metricSum) === null ? null : { key: '求和', get: function (r) { return r.metricSum; } };
+      return numOrNull(row.metricSum) === null ? null : { key: '求和', get: function (r) { return r.metricSum; } };
     }
     if (row.dataType === 'HISTOGRAM' || row.dataType === 'SUMMARY') {
-      return num(row.metricCount) === null
+      return numOrNull(row.metricCount) === null
           ? null : { key: '计数', get: function (r) { return r.metricCount; } };
     }
-    return num(row.metricValue) === null ? null : { key: '值', get: function (r) { return r.metricValue; } };
+    return numOrNull(row.metricValue) === null ? null : { key: '值', get: function (r) { return r.metricValue; } };
   }
 
-  function num(v) {
+  /** 取数字；不是数字时返回 null（**不返回 0** —— 补 0 会造出不存在的下跌）。
+   *  名字别叫 num：格式化那一节已经有一个 num 了，重名会把那个悄悄顶掉。 */
+  function numOrNull(v) {
     if (v === null || v === undefined) { return null; }
     var n = Number(v);
     return isNaN(n) ? null : n;
@@ -213,7 +215,7 @@ var Otl = (function () {
     var order = [];
     list.forEach(function (r) {
       var q = quantityOf(r);
-      var t = num(r.ts);
+      var t = numOrNull(r.ts);
       if (!q || t === null) { return; }
       var key = r.metricName + '|' + (r.attrKey || '-') + '|' + q.key;
       if (!byKey[key]) {
@@ -255,8 +257,12 @@ var Otl = (function () {
     }
 
     var W = 720, H = 190, L = 52, R = 12, T = 12, B = 24;
+    /** 一条序列最多画多少列。超出就按列降采样，并把比例写在图例上。 */
+    var COLS = 512;
     var px = function (t) { return L + (t - tMin) / (tMax - tMin) * (W - L - R); };
     var py = function (v) { return T + (vMax - v) / (vMax - vMin) * (H - T - B); };
+    var totalPoints = 0;
+    shown.forEach(function (k) { totalPoints += byKey[k].points.length; });
 
     var svg = ['<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" role="img"'
       + ' aria-label="指标趋势图">'];
@@ -277,18 +283,28 @@ var Otl = (function () {
     svg.push('<text class="axis-text" x="' + (W - R) + '" y="' + (H - 6) + '" text-anchor="end">'
       + esc(clockOf(tMax)) + '</text>');
 
+    var downsampled = 0;
     shown.forEach(function (k, i) {
       var s = byKey[k];
       var color = CHART_COLORS[i % CHART_COLORS.length];
-      var d = s.points.map(function (p, j) {
-        return (j ? 'L' : 'M') + px(p.t).toFixed(1) + ' ' + py(p.v).toFixed(1);
+      var cols = downsample(s.points, COLS, px);
+      downsampled += Math.max(0, s.points.length - cols.length);
+      // 每列画 min..max 的竖线，再连首尾。取 min/max 而不是均值 ——
+      // 均值会把尖峰抹平，而"刚才抖了一下"正是要看这张图的原因
+      var d = cols.map(function (c, j) {
+        var top = py(c.vmax).toFixed(1);
+        if (c.vmax === c.vmin) {
+          return (j ? 'L' : 'M') + c.x.toFixed(1) + ' ' + top;
+        }
+        return (j ? 'L' : 'M') + c.x.toFixed(1) + ' ' + top
+          + 'V' + py(c.vmin).toFixed(1)
+          + 'L' + c.x.toFixed(1) + ' ' + top;
       }).join(' ');
       svg.push('<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.6"/>');
-      s.points.forEach(function (p) {
-        // 悬浮提示：图表唯一的"读数"途径，坐标轴上不可能标出每个点
-        svg.push('<circle class="dot" cx="' + px(p.t).toFixed(1) + '" cy="' + py(p.v).toFixed(1)
-          + '" r="2.6" fill="' + color + '"><title>' + esc(clockOf(p.t) + '　' + s.what + ' '
-          + fmtNum(round(p.v)) + (s.unit ? ' ' + s.unit : '')) + '</title></circle>');
+      // 悬浮读数给这一列**原始点**的 min/max 与首尾时间，不是降采样后的值
+      cols.forEach(function (c) {
+        svg.push('<circle class="dot" cx="' + c.x.toFixed(1) + '" cy="' + py(c.vmax).toFixed(1)
+          + '" r="2.2" fill="' + color + '"><title>' + esc(colTitle(c, s)) + '</title></circle>');
       });
     });
     svg.push('</svg>');
@@ -305,10 +321,58 @@ var Otl = (function () {
     if (hidden > 0) {
       legend.push('<span class="item">还有 ' + hidden + ' 条序列没画</span>');
     }
+    if (downsampled > 0) {
+      // 降级必须可见（ADR-6 第十四节）：不写这一句，读者会以为那就是全部点
+      legend.push('<span class="item">已降采样：' + fmtNum(totalPoints) + ' 点 → '
+        + fmtNum(totalPoints - downsampled) + ' 列（每列取 min..max，悬浮看读数）</span>');
+    }
 
     host.innerHTML = svg.join('') + '<div class="legend">' + legend.join('') + '</div>'
       + '<div class="foot">图与上面的表是<b>同一份数据</b>（同一次 /api/metrics）。'
       + '悬浮任一点看读数。</div>';
+  }
+
+  /**
+ * 按像素列降采样：一列一个 min/max/首尾时间。
+ *
+ * <p>为什么取 min/max 而不是均值：均值会把尖峰抹平，
+ * 而"刚才抖了一下"正是要看这张图的原因。
+ *
+ * <p>点是按<b>时间</b>分的列，不是按序号 —— 时间间隔不均匀时按序号分列会把安静段
+ * 和密集段画成同样的宽度。
+ *
+ * @param px 时间 → x 的换算函数。<b>必须传进来</b>：它是调用方的局部变量，
+ *        放在这里闭包引用会在运行时报 "px is not defined"。
+ */
+  function downsample(points, cols, px) {
+    if (points.length <= cols) {
+      return points.map(function (p) {
+        return { x: px(p.t), vmin: p.v, vmax: p.v, n: 1, t0: p.t, t1: p.t };
+      });
+    }
+    var out = [];
+    var bucket = Math.ceil(points.length / cols);
+    for (var i = 0; i < points.length; i += bucket) {
+      var slice = points.slice(i, i + bucket);
+      var lo = slice[0].v, hi = slice[0].v;
+      for (var j = 1; j < slice.length; j++) {
+        lo = Math.min(lo, slice[j].v);
+        hi = Math.max(hi, slice[j].v);
+      }
+      out.push({ x: px(slice[Math.floor(slice.length / 2)].t),
+                 vmin: lo, vmax: hi, n: slice.length,
+                 t0: slice[0].t, t1: slice[slice.length - 1].t });
+    }
+    return out;
+  }
+
+  function colTitle(c, s) {
+    var u = s.unit ? ' ' + s.unit : '';
+    if (c.n === 1) {
+      return clockOf(c.t0) + '　' + s.what + ' ' + fmtNum(round(c.vmax)) + u;
+    }
+    return clockOf(c.t0) + '–' + clockOf(c.t1) + '　' + c.n + ' 个点　'
+      + s.what + ' min ' + fmtNum(round(c.vmin)) + ' / max ' + fmtNum(round(c.vmax)) + u;
   }
 
   function whatUnit(keys, byKey) {
@@ -800,13 +864,35 @@ var Otl = (function () {
     if (has('s-metrics')) { $('s-metrics').textContent = c.metrics; }
     if (has('s-resources')) { $('s-resources').textContent = c.resources; }
     if (c.off && has('tiles-note')) {
+      // 原因由服务端给（/api/summary 的 storeDegradedReason），**不在这里猜**
       $('tiles-note').innerHTML = '<span class="err">存储层未就绪</span> —— '
-        + '本次只计数不落盘。原因是数据目录不可写，详见 <a href="self.html">自监控</a>。';
+        + '本次只计数不落盘。'
+        + (ctx.d.storeDegradedReason
+            ? '原因：' + esc(ctx.d.storeDegradedReason)
+            : '原因见 <a href="self.html">自监控</a>。');
     }
   }
 
-  /** 自监控页的「库状态」块。**不是扩展自身的健康**，所以与生效配置分开一段。 */
+  /** 库状态：扩展自身的采集与落盘状况（ADR-6 第八节）。 */
   function libraryTables(ctx) {
+    // 降级原因由服务端给。**不要在页面里猜** ——
+    // 原来这里硬编码了一句"原因是数据目录不可写"，而实际可能是路径不是目录、
+    // 权限被拒、文件被占用、建表失败，每一种的下一步都不一样。
+    if (has('runtime')) {
+      $('runtime').innerHTML = kv([
+        ['实际端口', fmtNum(ctx.d.actualPort)],
+        ['配置端口', fmtNum((ctx.d.config || {}).port)
+          + (ctx.d.actualPort !== (ctx.d.config || {}).port ? '（冲突已退让）' : '')],
+        ['启动于', new Date(ctx.d.startedAt || 0).toLocaleString()],
+        ['已运行', Math.round((ctx.d.uptimeMs || 0) / 1000) + ' 秒'],
+        ['agent', ctx.d.agentVersion || '不在 agent 里运行']
+      ]) + (ctx.d.storeDegradedReason
+        ? '<div class="note" style="margin-top:10px"><b>存储层已降级</b> —— '
+          + esc(ctx.d.storeDegradedReason)
+          + '<br>本次只计数不落盘：队列还在收，数据不会攒下来。'
+          + '「生效配置」那一段仍然可用。</div>'
+        : '');
+    }
     if (has('queues')) {
       $('queues').innerHTML = ['traces', 'logs', 'metrics'].map(function (sig) {
         var q = ctx.queues[sig] || {};
@@ -814,7 +900,9 @@ var Otl = (function () {
           + '<td class="num">' + num(q.drained) + '</td>'
           + '<td class="num">' + num(q.dropped) + '</td>'
           + '<td class="num">' + num(q.sinkErrors) + '</td>'
-          + '<td class="num">' + num(q.backlog) + '</td></tr>';
+          + '<td class="num">' + num(q.backlog) + '</td>'
+          + '<td class="num">' + num(q.batches) + '</td>'
+          + '<td class="num">' + num(q.capacity) + '</td></tr>';
       }).join('');
     }
     if (has('rings')) {

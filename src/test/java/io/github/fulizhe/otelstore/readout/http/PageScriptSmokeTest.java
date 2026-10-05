@@ -71,7 +71,7 @@ class PageScriptSmokeTest {
             final Path script = new File(tmp, page + ".smoke.js").toPath();
             Files.write(script, harness(resource("app.js"), idsOf(html), declared)
                     .getBytes(UTF8));
-            final Exec r = exec(node, script.toString());
+final Exec r = exec(node, script.toString());
             if (r.status != 0 || !r.out.contains("SMOKE-OK")) {
                 failures.add(page + "  声明[" + declared + "]\n" + r.out.trim());
             }
@@ -264,7 +264,11 @@ class PageScriptSmokeTest {
             + "  endTime: 1700000000500000000, statusCode: 1, scopeName: 'io.demo',\n"
             + "  resource: 'service.name=s:demo', timestamp: 1700000000000000000,\n"
             + "  severityText: 'INFO', bodyPreview: 'hi', metricName: 'm', unit: 'ms',\n"
-            + "  dataType: 'HISTOGRAM', metricValue: null, metricCount: 3, metricSum: 1.5,\n"
++ "  dataType: 'HISTOGRAM', metricValue: null, metricCount: 3, metricSum: 1.5,\n"
+            // ts 必须有：没有它 renderChart 会走「这些点没有可画的数字」分支，
+            // 于是「单个时间点不画线」那条断言测的其实是「没数据」而不是「一个点」
+            // 于是"单个时间点不画线"那条断言测的其实是"没数据"，而不是"一个点"
+            + "  ts: 1700000000000000000, attrKey: 'abcdef0123456789',\n"
             + "  detail: { flavor: 'explicit', leBoundaries: ['2.0','+Inf'], cumulative: [3,3] } }];\n"
             + "var fetch = function (url) {\n"
             + "  asked.push(url);\n"
@@ -351,14 +355,17 @@ class PageScriptSmokeTest {
             + "  setTimeout(function () {\n"
             + "    ROW = keep;\n"
 + "    var svg = (byId['chart'] || {}).innerHTML || '';\n"
-            + "    if (svg.indexOf('<svg') < 0) { throw new Error('多点也没画出图：' + svg); }\n"
+            // 把 metrics-msg 一起带上：loadMetrics 的 catch 会把渲染异常写在那里，
+            // 不带出来的话就只能看到"图没出现"，看不到"为什么"
+            + "    var msg = (byId['metrics-msg'] || {}).innerHTML || '';\n"
+            + "    if (svg.indexOf('<svg') < 0) { throw new Error('多点也没画出图：' + svg + ' || msg=' + msg); }\n"
             + "    if (svg.indexOf('<path') < 0) { throw new Error('图里没有折线：' + svg); }\n"
             // 直方图没有单一的值，必须标明画的是「计数」而不是「值」
             + "    if (svg.indexOf('计数') < 0) { throw new Error('没标明画的是哪个量：' + svg); }\n"
             // 属性读不出来，图例只能给指标名缀一段哈希（不能拿哈希冒充属性名）
             + "    if (svg.indexOf('abcdef01') < 0) { throw new Error('图例没给属性哈希：' + svg); }\n"
-            + "  }, 10);\n"
-+ "}\n";
++ "  }, 60);\n"
+            + "}\n";
     }
 
     /** {@code "tiles,library,"} → {@code "'tiles','library',"} */
