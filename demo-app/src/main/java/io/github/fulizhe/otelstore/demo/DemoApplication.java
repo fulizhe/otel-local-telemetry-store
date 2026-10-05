@@ -1,6 +1,16 @@
 package io.github.fulizhe.otelstore.demo;
 
+import io.github.fulizhe.otelstore.demo.deps.DepStatus;
+import io.github.fulizhe.otelstore.demo.deps.DependencyProbe;
+import io.github.fulizhe.otelstore.demo.deps.DepsDemoService;
+import io.github.fulizhe.otelstore.demo.deps.DepsRegistry;
+import io.github.fulizhe.otelstore.demo.deps.H2Dependency;
 import io.github.fulizhe.otelstore.demo.stats.GeneratedSignals;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
@@ -8,7 +18,8 @@ import org.springframework.context.annotation.Bean;
 /**
  * 演示应用入口。
  *
- * <p>它只做两件事：<b>按需造出三个信号</b>，以及<b>把自己造了多少暴露成可断言的计数</b>。
+ * <p>它做三件事：<b>按需造出三个信号</b>、<b>把自己造了多少暴露成可断言的计数</b>、
+ * 以及<b>造出五类外部依赖的调用样例</b>。
  * 它<b>不</b>托管读口 —— 读口在 agent 扩展里，与本应用隔着 ClassLoader
  * （见 {@code docs/notes/2026-10-04-r0-extension-points.md} 第五节）。
  *
@@ -16,6 +27,8 @@ import org.springframework.context.annotation.Bean;
  */
 @SpringBootApplication
 public class DemoApplication {
+
+    private static final Logger LOG = LoggerFactory.getLogger("otelstore.demo.deps");
 
     public static void main(final String[] args) {
         SpringApplication.run(DemoApplication.class, args);
@@ -27,5 +40,74 @@ public class DemoApplication {
     @Bean
     public GeneratedSignals generatedSignals() {
         return new GeneratedSignals();
+    }
+
+    @Bean
+    public H2Dependency h2Dependency() {
+        return new H2Dependency();
+    }
+
+    /**
+     * 五类依赖的探测清单，<b>按页面上展示的顺序</b>。
+     *
+     * <p>本票只把 H2 接上；其余四项如实报 {@code ready=false}，
+     * 而且 detail 要写成<b>"还没接入"</b>而不是"起不来" ——
+     * 这两者要处理的事完全不同，混成一句"不可用"会让人以为靶子坏了。
+     */
+    @Bean
+    public List<DependencyProbe> dependencyProbes(final H2Dependency h2) {
+        return new ArrayList<DependencyProbe>(Arrays.asList(
+                h2,
+                notYetWired(DepsRegistry.REDIS, "Redis（进程内）", true),
+                notYetWired(DepsRegistry.KAFKA, "Kafka（进程内 KRaft 单节点）", true),
+                notYetWired(DepsRegistry.GRPC, "gRPC（进程内 Netty server）", true),
+                notYetWired(DepsRegistry.MYSQL, "MySQL（外部实例）", false)));
+    }
+
+    private static DependencyProbe notYetWired(final String key, final String title,
+                                               final boolean embedded) {
+        return new DependencyProbe() {
+            @Override
+            public String key() {
+                return key;
+            }
+
+            @Override
+            public String title() {
+                return title;
+            }
+
+            @Override
+            public boolean embedded() {
+                return embedded;
+            }
+
+            @Override
+            public DepStatus probe() {
+                return DepStatus.notReady(key, title, embedded,
+                        "还没接入：这一跳由后续票接上（H2 已通，其余四项在铺开中）");
+            }
+        };
+    }
+
+    @Bean
+    public DepsRegistry depsRegistry(final List<DependencyProbe> probes) {
+        final DepsRegistry registry = new DepsRegistry(probes);
+        for (final DepStatus s : registry.all()) {
+            if (s.ready()) {
+                LOG.info("依赖 {} 就绪：{}", s.key(), s.detail());
+            } else {
+                // 打成 WARN 而不是 ERROR：探不通是预期状态，靶子照常起
+                LOG.warn("依赖 {} 不可用：{}", s.key(), s.detail());
+            }
+        }
+        return registry;
+    }
+
+    @Bean
+    public DepsDemoService depsDemoService(final DepsRegistry registry,
+                                           final H2Dependency h2,
+                                           final GeneratedSignals stats) {
+        return new DepsDemoService(registry, h2, stats);
     }
 }

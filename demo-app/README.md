@@ -47,8 +47,51 @@ curl.exe --noproxy "*" -X POST "http://localhost:18081/demo/spans?count=3&childP
 | `POST /demo/logs?count=&level=INFO\|WARN\|ERROR` | 在 current span 内部打日志，因此**带 trace 上下文** | 行数 |
 | `POST /demo/metrics?count=` | 一个计数器 + 一个直方图 | 指标点数 = count × 2 |
 | `GET /demo/work?ms=` | 一次真实请求，sleep 指定毫秒 | 由 agent 产生 server span |
-| `GET /demo/stats` | 本应用造了多少（六个计数 + uptime） | 断言的期望值来源 |
+| `GET /demo/stats` | 本应用造了多少（六个计数 + uptime + 五跳各多少/失败多少） | 断言的期望值来源 |
 | `POST /demo/reset` | 计数清零 | — |
+| `POST /demo/deps/h2` | 打一次 H2 那一跳（`demo_h2_order` 表） | 返回**当前 traceId** + `rows` |
+| `GET /demo/deps/status` | 五项依赖的 `ready` / `detail` / `embedded` | 少的那一跳要能提前看到 |
+
+## 五类外部依赖的调用样例
+
+demo-app 会**真的去调**五类外部依赖，让 agent 的仪表化在真实客户端库上产生 span
+（H2 / Redis / Kafka / gRPC / MySQL）。
+
+**这里没有一行自己开 span 的代码，而且这是核心断言**：调用发生在 handler 线程里，
+Tomcat 仪表化已经把 server span 设成 current，所以 CLIENT span 会自动挂上去。
+自己开 span 就是在测自己的代码。
+
+当前进度（`GET /demo/deps/status` 是唯一准绳）：
+
+| 跳 | 服务端 | `embedded` | 现状 |
+| --- | --- | --- | --- |
+| `h2` | 进程内内存库 | true | **已通** |
+| `redis` | 进程内（`embedded-redis`） | true | 未接入 |
+| `kafka` | 进程内 KRaft 单节点 | true | 未接入 |
+| `grpc` | 进程内 Netty server | true | 未接入 |
+| `mysql` | **外部实例**（ADR-7 里唯一的例外） | false | 未接入 |
+
+```powershell
+curl.exe --noproxy "*" "http://localhost:18081/demo/deps/status"
+curl.exe --noproxy "*" -X POST "http://localhost:18081/demo/deps/h2"
+```
+
+**降级时端点仍然返回 HTTP 200**，而且 `reason` 分三种说法（`not-ready` / `call-failed` /
+`not-registered`）——「这个依赖没起来」是可预期的正常状态（MySQL 尤其如此），
+500 会让人分不清"依赖没起来"与"服务坏了"。进程照常启动，不重试。
+
+**四个坑**：
+
+1. **H2 与 MySQL 在图上长得一模一样**：都只产生一条 `scopeName=jdbc` 的 CLIENT span。
+   H2 是内存库、没有网络连接，所以**没有 SERVER span**；MySQL 的线协议层 agent 也没仪表化。
+   → 区分靠 **SQL 里的表名**（`demo_h2_order` / `demo_mysql_order`），span name 就是 SQL。
+2. **别用 starter**。Spring Boot 管理的 Lettuce 6.x / spring-kafka 落在仪表化支持范围外，
+   **静默不生效** —— 所以 H2 也只引驱动不引 `spring-boot-starter-jdbc`。
+3. **`scopeName` 全一样** → 调用的不是客户端类（例如错用了 `MockProducer`）。
+4. **`/demo/stats` 里 `depCalls` 与 `depFailures` 分开** ——
+   「少了一条 CLIENT span」可能是没埋点，也可能是库没起来，混成一个数就分不出来了。
+
+## 端到端对账的口径
 
 `/demo/stats` 的存在理由：**端到端验证需要一个不依赖读口的期望值来源。**
 "我造了 3 个 span"这件事应用自己就知道 —— 拿它和库里实际的条数对账，
@@ -105,14 +148,24 @@ Phase 5 之后，读口会是 agent 扩展里的一个 HTTP 服务（默认端�
 ```
 demo-app/
 ├── pom.xml                     Spring Boot 2.7.18（2.x 末代，支持 Java 8）
-└── src/main/
-    ├── java/io/github/fulizhe/otelstore/demo/
-    │   ├── DemoApplication.java          入口 + GeneratedSignals 的 @Bean
-    │   ├── stats/GeneratedSignals.java   本应用造了多少（脱离 Spring 可单测）
-    │   └── web/DemoSignalController.java 造信号的全部端点
-    └── resources/
-        ├── application.yml               端口 18081、日志格式
-        └── static/index.html             控制台页面（无构建步骤，纯静态）
+└── src/
+    ├── main/
+    │   ├── java/io/github/fulizhe/otelstore/demo/
+    │   │   ├── DemoApplication.java          入口 + 各个 @Bean
+    │   │   ├── stats/GeneratedSignals.java   本应用造了多少（脱离 Spring 可单测）
+    │   │   ├── deps/                         五类外部依赖的探测与调用
+    │   │   │   ├── DepStatus.java            ready + detail 不可分开
+    │   │   │   ├── DependencyProbe.java      探测接口（key/title/embedded/probe）
+    │   │   │   ├── DepsRegistry.java         启动时探测一次，异常压成降级
+    │   │   │   ├── H2Dependency.java         内存库，裸 JDBC，不引 starter
+    │   │   │   └── DepsDemoService.java      调用 + 降级响应（**不开自己的 span**）
+    │   │   └── web/
+    │   │       ├── DemoSignalController.java 造信号的全部端点
+    │   │       └── DepsDemoController.java   /demo/deps/*
+    │   └── resources/
+    │       ├── application.yml               端口 18081、日志格式
+    │       └── static/index.html             控制台页面（无构建步骤，纯静态）
+    └── test/java/...                          只有纯内存的可单测部分
 ```
 
 `demo-app` **不在主工程的 maven reactor 里**（主工程保持单模块），

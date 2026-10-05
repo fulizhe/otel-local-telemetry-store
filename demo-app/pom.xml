@@ -47,6 +47,19 @@
       <version>${otel.api.version}</version>
     </dependency>
 
+    <!--
+      H2：五类外部依赖里的第一跳（进程内内存库）。
+      **只引驱动，不引 spring-boot-starter-jdbc** —— 理由与 Redis/Kafka 那几跳同源：
+      starter 会把连接池一起拖进来，而连接池的获取本身会被仪表化成 span，
+      链路图上多出来的不是我们想展示的东西。用裸驱动时 scopeName=jdbc 的
+      CLIENT span 数量恰好等于我们真的发了几条 SQL。
+    -->
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
