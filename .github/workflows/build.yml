@@ -42,3 +42,9 @@ jobs:
 
       - name: Test
         run: mvn -B test
+
+      # 页面脚本也要过一道语法检查。GitHub runner 自带 node，
+      # 而页面这一层的 bug 全都是「HTML 正常、Java 测试全绿、只在控制台抛一行」。
+      # PageScriptSmokeTest 会真跑 app.js；这一步是比它更早的一道廉价门。
+      - name: Syntax-check the readout page script
+        run: node --check src/main/resources/io/github/fulizhe/otelstore/readout/http/app.js

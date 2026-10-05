@@ -36,13 +36,15 @@ var Otl = (function () {
     return h;
   }
   function saveToken() {
-    sessionStorage.setItem(TOKEN_KEY, token.value.trim());
-    restart();
+    if (has('token')) {
+      sessionStorage.setItem(TOKEN_KEY, $('token').value.trim());
+    }
+    Otl.refresh();
   }
   function clearToken() {
     sessionStorage.removeItem(TOKEN_KEY);
     if (has('token')) { $('token').value = ''; }
-    restart();
+    Otl.refresh();
   }
 
   // ---------------- 格式化
@@ -507,6 +509,17 @@ var Otl = (function () {
 
   // ---------------- 启动
 
+  /**
+   * 本页要跑的东西，由**页面显式声明**（{@link start} 的参数）。
+   *
+   * <p>曾经试图靠"猜"：`has('spans')` 有就挂加载器、`has('s-spans')` 有就填格子。
+   * 那是错的 —— 猜意味着键名和 id 必须永远对上，而对不上时的表现是
+   * `<b>f is not a function</b>` 或者一格数字永远不动：
+   * 两种都只出现在浏览器控制台，HTML 看上去完全正常。
+   *
+   * <p>声明式的代价是每页多写一个字符串数组，收益是**接线错了会立刻炸**，
+   * 而且能被测试钉住。
+   */
   var reload = [];
 
   /** 从 URL 取参数，让别的页面能带着筛选条件跳过来。 */
@@ -515,34 +528,63 @@ var Otl = (function () {
     return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : '';
   }
 
-  function start(page) {
+  var LOADERS = {
+    traces: loadTraces,
+    logs: loadLogs,
+    metrics: loadMetrics,
+    tiles: function () { return loadSummary(tiles); },
+    library: function () { return loadSummary(libraryTables); }
+  };
+
+  /**
+   * @param page 段名，只用于报错时说清是哪个页面。
+   * @param parts 要跑的部分，见 {@link LOADERS} 的键。
+   */
+  function start(page, parts) {
     injectShell();
     if (has('token') && token()) { $('token').value = token(); }
+
+    reload = [];
+    (parts || []).forEach(function (name) {
+      var loader = LOADERS[name];
+      // 拼错名字要立刻炸，不能等 30 秒后表现为"这一块是空的"
+      if (!loader) {
+        throw new Error(page + ' 声明了没知的部分 ' + name +
+            '（可用：' + Object.keys(LOADERS).join(' / ') + '）');
+      }
+      reload.push(loader);
+    });
+
+    ['traces', 'logs', 'metrics'].forEach(function (k) {
+      if ((parts || []).indexOf(k) >= 0) { wireTable(k); }
+    });
+
     // 表单回车即查询，否则"填了不按按钮"是很常见的误操作
     ['trace-id', 'metric-name'].forEach(function (id) {
       if (has(id)) {
         $(id).addEventListener('keydown', function (ev) {
-          if (ev.key === 'Enter') { ev.preventDefault(); reload.forEach(function (f) { f(); }); }
+          if (ev.key === 'Enter') { ev.preventDefault(); runReload(); }
         });
       }
     });
     if (has('trace-id') && param('traceId')) { $('trace-id').value = param('traceId'); }
     if (has('metric-name') && param('name')) { $('metric-name').value = param('name'); }
 
-    // 页面自己声明要刷新哪几块；重载时只跑声明过的
-    ['traces', 'logs', 'metrics'].forEach(function (k) {
-      if (has(k)) { reload.push(loaders[k]); wireTable(k); }
-    });
-    // 行数格子：按**格子本身**在不在来判定，不按外层容器某个 id ——
-    // 否则"容器改名了"会表现成四个数字永远显示 –，看不出是接线断了。
-    if (has('s-spans')) { reload.push(loadSummary(tiles)); }
-    if (has('queues') || has('rings') || has('config')) { reload.push(loadSummary(libraryTables)); }
-
-    reload.forEach(function (f) { f(); });
-    setInterval(function () { reload.forEach(function (f) { f(); }); }, REFRESH_MS);
+    runReload();
+    setInterval(runReload, REFRESH_MS);
   }
 
-  var loaders = { traces: loadTraces, logs: loadLogs, metrics: loadMetrics };
+  function runReload() {
+    reload.forEach(function (f) {
+      // 已经变成 undefined 的（比如有人 push 了立即调用的结果）要有说明，
+      // 而不是让调用方看到 "f is not a function"
+      if (typeof f !== 'function') {
+        throw new Error('要跑的东西不是函数，是 ' + String(f) +
+            ' —— 那是 push 了一个立即调用的结果');
+      }
+      f();
+    });
+  }
 
   /** 索引页的概览：只放四个行数，不重复自监控页那套健康表。 */
   function tiles(ctx) {
@@ -588,7 +630,7 @@ var Otl = (function () {
   return {
     start: start, saveToken: saveToken, clearToken: clearToken,
     openDetail: openDetail, closeDetail: closeDetail,
-    refresh: function () { reload.forEach(function (f) { f(); }); },
+    refresh: runReload,
     esc: esc, clip: clip
   };
 })();
