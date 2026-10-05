@@ -92,12 +92,13 @@ Invoke-RestMethod -NoProxy http://localhost:18081/demo/stats   # PS7 支持 -NoP
 验收信号与失败判据见
 [`../docs/notes/2026-10-04-verification-and-pitfalls.md`](../docs/notes/2026-10-04-verification-and-pitfalls.md)。
 
-Phase 5 之后，读口会是 agent 扩展里的一个 HTTP 服务（默认端口 `17890`，撞端口自动退随机），
-届时本页会多一块内容直接读它。
+Phase 5 之后，读口会是 agent 扩展里的一个 HTTP 服务（默认端口 `17890`，撞端口自动退随机，
+实际端口写在 `otel-local-telemetry-store/otelstore.port` 与启动日志里）。
 
-**已知的跨源问题**：读口在 `17890`、本页在 `18081`，属于跨源。
-要么读口开 CORS，要么本页加代理，要么直接用浏览器打开读口那侧的页面。
-这个取舍留到 Phase 5 定，先记在这里。
+**跨源问题已经定了**（[ADR-6](../docs/adr/adr-06-readout-http-surface.md) 第五节）：
+**浏览器直接打开读口那侧**（`http://<host>:17890/`），因此**读口不开 CORS、本页不加代理**。
+代价是那个页面不在本页导航里，要另开一个标签页；换来的是少一个开放面 ——
+开 CORS 等于允许任意站点来读你的 trace。
 
 ## 结构
 

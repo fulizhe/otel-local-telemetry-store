@@ -150,9 +150,10 @@
       <code>spanPayloadHex(&lt;id&gt;)</code>（读回单条的环形载荷）。<br><br>
       <b>对账：</b>上表的条数应当与 <code>spanRows()</code> 对得上，差额来自采样与丢弃
       （head sampling 与 SDK 截断在原理上不可计数，只能这样对照发现）。<br><br>
-      <b>已知的坑：</b>HTTP 读口在 <code>17890</code>、本页在 <code>18081</code>，属于跨源。
-      要么读口开 CORS，要么本页加一层代理，要么直接用浏览器打开读口那侧的页面。
-      这个取舍留到下一阶段定。
+      <b>跨源已经定了：</b>HTTP 读口做完后<b>浏览器直接打开读口那侧</b>（<code>http://&lt;host&gt;:17890/</code>），
+      读口<b>不开 CORS</b>、本页<b>不加代理</b> —— 代价是那个页面不在本页导航里、要另开标签页，
+      换来的是少一个开放面（开 CORS 等于允许任意站点读你的 trace）。
+      实际端口若因冲突退到了随机值，会写在 <code>otel-local-telemetry-store/otelstore.port</code> 与启动日志里。
     </div>
   </div>
 

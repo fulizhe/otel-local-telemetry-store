@@ -191,7 +191,7 @@ pwsh -NoProfile -File scripts/run-with-agent.ps1            # 端到端，长驻
 | ADR-3 第 4 种可不可计数 | **未验**。`getTotalAttributeCount()` 是公开 API，可能让它从黑箱变成可计数 | 一次性探针，见 `index.md` |
 | metrics 分钟/小时 rollup | 本版只定义"时间序列形态 + 行数水位"（`rows.metrics`） | 后面 |
 | 多实例共用 `dataDir` | **明确不支持**，是声明的作用域前提（ADR-4） | 见到有人要支持，先写 ADR |
-| 读口跨源取舍 | 未决（读口 17890 / demo-app 18081） | Phase 5；已记在 `demo-app/README.md` |
+| 读口跨源取舍 | **已定**（adr-06）：浏览器直接开读口那侧，不开 CORS、demo-app 不加代理 | Phase 5 实现时按 adr-06 第五节 |
 
 **已验完的**：ADR-3 原本待验的「SDK 截断有无信号」—— 已验为**完全静默**，
 attributes / events / links 三种截断都不产生指标、不产生日志、`SpanData` 上无标记。
