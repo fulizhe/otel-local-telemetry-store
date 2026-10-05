@@ -350,6 +350,16 @@ final Exec r = exec(node, script.toString());
             + "      dataType: 'HISTOGRAM', metricValue: null, metricCount: 3 + i, metricSum: i,\n"
             + "      ts: 1700000000000000000 + i * 1000000000, attrKey: 'abcdef0123456789' });\n"
             + "  }\n"
+            + "  var keep2 = ROW;\n"
+            + "  var sum1 = { id: 1, metricName: 'demo.counter', unit: '1', dataType: 'SUM',\n"
+            + "    metricValue: 10, metricCount: null, metricSum: null,\n"
+            + "    ts: 1700000000000000000, attrKey: 'aa11' };\n"
+            + "  var sum2 = { id: 2, metricName: 'demo.counter', unit: '1', dataType: 'SUM',\n"
+            + "    metricValue: 14, metricCount: null, metricSum: null,\n"
+            + "    ts: 1700000005000000000, attrKey: 'aa11' };\n"
+            + "  var sum3 = { id: 3, metricName: 'demo.counter', unit: '1', dataType: 'SUM',\n"
+            + "    metricValue: 20, metricCount: null, metricSum: null,\n"
+            + "    ts: 1700000010000000000, attrKey: 'aa11' };\n"
             + "  var keep = ROW; ROW = many;\n"
             + "  Otl.start('chart', ['metrics']);\n"
             + "  setTimeout(function () {\n"
@@ -363,8 +373,19 @@ final Exec r = exec(node, script.toString());
             // 直方图没有单一的值，必须标明画的是「计数」而不是「值」
             + "    if (svg.indexOf('计数') < 0) { throw new Error('没标明画的是哪个量：' + svg); }\n"
             // 属性读不出来，图例只能给指标名缀一段哈希（不能拿哈希冒充属性名）
-            + "    if (svg.indexOf('abcdef01') < 0) { throw new Error('图例没给属性哈希：' + svg); }\n"
-+ "  }, 60);\n"
++ "    if (svg.indexOf('abcdef01') < 0) { throw new Error('图例没给属性哈希：' + svg); }\n"
+            // Sum 形态：metricSum 恒为 null（MetricMapper 只对 Histogram/Summary 取 getSum），
+            // 所以必须退回 metricValue —— 否则**每一个单调计数器都被整条丢掉**，
+            // 而单调计数器恰恰是最该看的序列。真机上就是这样发现的。
+            + "    ROW = [sum1, sum2, sum3];\n"
+            + "    Otl.start('counter', ['metrics']);\n"
+            + "    setTimeout(function () {\n"
+            + "      ROW = keep2;\n"
+            + "      var s2 = (byId['chart'] || {}).innerHTML || '';\n"
+            + "      if (s2.indexOf('demo.counter') < 0) { throw new Error('Sum 序列没画出来：' + s2); }\n"
+            + "      if (s2.indexOf('求和') >= 0) { throw new Error('Sum 没有 metricSum 却标成求和：' + s2); }\n"
+            + "    }, 40);\n"
+            + "  }, 60);\n"
             + "}\n";
     }
 

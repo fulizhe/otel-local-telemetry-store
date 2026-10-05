@@ -49,7 +49,7 @@
 
     <!--
       H2：五类外部依赖里的第一跳（进程内内存库）。
-      **只引驱动，不引 spring-boot-starter-jdbc** —— 理由与 Redis/Kafka 那几跳同源：
+      **只引驱动，不引 spring-boot-starter-jdbc** —— 理由与下面 Redis/Kafka 那几跳同源：
       starter 会把连接池一起拖进来，而连接池的获取本身会被仪表化成 span，
       链路图上多出来的不是我们想展示的东西。用裸驱动时 scopeName=jdbc 的
       CLIENT span 数量恰好等于我们真的发了几条 SQL。
@@ -58,6 +58,45 @@
       <groupId>com.h2database</groupId>
       <artifactId>h2</artifactId>
       <scope>runtime</scope>
+    </dependency>
+
+    <!--
+      Redis 那两跳：客户端用**裸 Jedis**，服务端内嵌。
+
+      **不用 spring-boot-starter-data-redis** —— 它管理的 Lettuce 6.x 落在 agent 2.32.0
+      的仪表化支持范围外（Lettuce 支持到 5.x），会**静默不生效**：
+      代码跑得通、span 就是没有，而页面上看不出任何异常。
+      这不是"配置错了"，是选型错了，所以整个 starter 都不引。
+
+      embedded-redis 里是 **redis-server 2.8.19**（很老）。**不用升级**：
+      Jedis 的 span 来自客户端方法，服务端版本不影响埋点。
+    -->
+    <dependency>
+      <groupId>redis.clients</groupId>
+      <artifactId>jedis</artifactId>
+      <version>3.8.0</version>
+    </dependency>
+    <dependency>
+      <groupId>it.ozimov</groupId>
+      <artifactId>embedded-redis</artifactId>
+      <version>0.7.3</version>
+      <exclusions>
+        <!--
+          它要 slf4j-simple，而本应用已经有 logback —— 两个 binding 同时在，
+          日志会走 slf4j-simple 打到 stderr，demo-app 的日志格式配置就整个失效了
+          （agent 正是把日志改到 stderr 上，格式一乱就没法读了）。
+        -->
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-simple</artifactId>
+        </exclusion>
+      </exclusions>
+      <!--
+        guava **不排**：RedisServerBuilder 运行时真的要 com.google.common.collect.Maps。
+        排掉之后 NoClassDefFoundError 出现在**探测里** —— 而探测已经把异常压成
+        ready=false 了，读起来像"Redis 起不来"，真因却是依赖被排没了。
+        这就是"降级掩盖了配置错误"：最难查的一类，所以测试直接跑真的探测。
+      -->
     </dependency>
 
     <dependency>

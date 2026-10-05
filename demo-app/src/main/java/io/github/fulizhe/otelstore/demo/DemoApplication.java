@@ -5,6 +5,7 @@ import io.github.fulizhe.otelstore.demo.deps.DependencyProbe;
 import io.github.fulizhe.otelstore.demo.deps.DepsDemoService;
 import io.github.fulizhe.otelstore.demo.deps.DepsRegistry;
 import io.github.fulizhe.otelstore.demo.deps.H2Dependency;
+import io.github.fulizhe.otelstore.demo.deps.RedisDependency;
 import io.github.fulizhe.otelstore.demo.stats.GeneratedSignals;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -47,6 +48,11 @@ public class DemoApplication {
         return new H2Dependency();
     }
 
+    @Bean
+    public RedisDependency redisDependency() {
+        return new RedisDependency();
+    }
+
     /**
      * 五类依赖的探测清单，<b>按页面上展示的顺序</b>。
      *
@@ -55,10 +61,11 @@ public class DemoApplication {
      * 这两者要处理的事完全不同，混成一句"不可用"会让人以为靶子坏了。
      */
     @Bean
-    public List<DependencyProbe> dependencyProbes(final H2Dependency h2) {
+    public List<DependencyProbe> dependencyProbes(final H2Dependency h2,
+                                                  final RedisDependency redis) {
         return new ArrayList<DependencyProbe>(Arrays.asList(
                 h2,
-                notYetWired(DepsRegistry.REDIS, "Redis（进程内）", true),
+                redis,
                 notYetWired(DepsRegistry.KAFKA, "Kafka（进程内 KRaft 单节点）", true),
                 notYetWired(DepsRegistry.GRPC, "gRPC（进程内 Netty server）", true),
                 notYetWired(DepsRegistry.MYSQL, "MySQL（外部实例）", false)));
@@ -107,7 +114,8 @@ public class DemoApplication {
     @Bean
     public DepsDemoService depsDemoService(final DepsRegistry registry,
                                            final H2Dependency h2,
+                                           final RedisDependency redis,
                                            final GeneratedSignals stats) {
-        return new DepsDemoService(registry, h2, stats);
+        return new DepsDemoService(registry, h2, redis, stats);
     }
 }

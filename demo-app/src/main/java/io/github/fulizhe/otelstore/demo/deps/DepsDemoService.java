@@ -23,12 +23,14 @@ public final class DepsDemoService {
 
     private final DepsRegistry registry;
     private final H2Dependency h2;
+    private final RedisDependency redis;
     private final GeneratedSignals stats;
 
     public DepsDemoService(final DepsRegistry registry, final H2Dependency h2,
-                           final GeneratedSignals stats) {
+                           final RedisDependency redis, final GeneratedSignals stats) {
         this.registry = registry;
         this.h2 = h2;
+        this.redis = redis;
         this.stats = stats;
     }
 
@@ -68,6 +70,41 @@ public final class DepsDemoService {
             m.put("ok", Boolean.FALSE);
             m.put("error", String.valueOf(e.getMessage()));
             m.put("note", "启动探测时这一项是 ready 的，现在失败了 —— 说明是运行期问题，不是没接入");
+            return m;
+        }
+    }
+
+    /**
+     * 打一次 Redis 那一跳（SET / GET / DEL）。
+     *
+     * <p>它与 H2 那一跳是<b>完全不同的一种仪表化</b>，所以值得单独一跳：
+     * 图上会出现 {@code scopeName=jedis}，而那是五个来源里第一个非 JDBC 的。
+     */
+    public Map<String, Object> callRedis() {
+        final DepStatus status = registry.get(RedisDependency.KEY);
+        final Map<String, Object> m = new LinkedHashMap<String, Object>();
+        m.put("dependency", RedisDependency.KEY);
+        m.put("traceId", currentTraceId());
+
+        if (status == null || !status.ready()) {
+            return degrade(m, status);
+        }
+        try {
+            // SET / GET / DEL 各是一次真实的客户端调用 —— span 来自 Jedis 的方法，
+            // 不是我们自己开的。**不要为了"让图更好看"加自己的 span。**
+            m.put("ops", redis.call());
+            stats.addDepCall(RedisDependency.KEY, true);
+            m.put("ok", Boolean.TRUE);
+            m.put("note", "这一跳的 span 来自 agent 的 Jedis 仪表化；"
+                    + "用 starter 的 Lettuce 6.x 会静默不生效（见 README）");
+            return m;
+        } catch (final RuntimeException e) {
+            // Jedis 连不上抛的是 JedisConnectionException（RuntimeException），不走 SQLException
+            stats.addDepCall(RedisDependency.KEY, false);
+            LOG.warn("Redis 调用失败（探测时是通的）", e);
+            m.put("ok", Boolean.FALSE);
+            m.put("error", String.valueOf(e.getMessage()));
+            m.put("note", "启动探测时这一项是 ready 的，现在失败了 —— 说明是运行期问题");
             return m;
         }
     }

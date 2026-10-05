@@ -176,7 +176,16 @@ var Otl = (function () {
       return numOrNull(row.metricValue) === null ? null : { key: '值', get: function (r) { return r.metricValue; } };
     }
     if (row.dataType === 'SUM') {
-      return numOrNull(row.metricSum) === null ? null : { key: '求和', get: function (r) { return r.metricSum; } };
+      // Sum 优先画 metricSum，没有就退回 metricValue。
+      // 踩过的坑：MetricMapper 的 sampleSum 只对 Histogram / ExponentialHistogram / Summary
+      // 取 getSum()，**Sum 点走不到那个分支，所以 metricSum 恒为 null**。
+      // 只认 metricSum 的话，**每一个单调计数器都会被整条丢掉**（图上根本看不见它）——
+      // 而单调计数器恰恰是最该看的序列。
+      if (numOrNull(row.metricSum) !== null) {
+        return { key: '求和', get: function (r) { return r.metricSum; } };
+      }
+      return numOrNull(row.metricValue) === null
+          ? null : { key: '值', get: function (r) { return r.metricValue; } };
     }
     if (row.dataType === 'HISTOGRAM' || row.dataType === 'SUMMARY') {
       return numOrNull(row.metricCount) === null
@@ -276,8 +285,8 @@ var Otl = (function () {
       svg.push('<text class="axis-text" x="4" y="' + (py(v) + 3) + '">'
         + esc(clip(fmtNum(round(v)), 8)) + '</text>');
     });
-    svg.push('<text class="axis-text" x="4" y="' + (T + 8) + '">' + esc(whatUnit(shown, byKey))
-      + '</text>');
+    svg.push('<text class="axis-text" x="' + (W - R) + '" y="' + (T + 8) + '" text-anchor="end">'
+      + esc(whatUnit(shown, byKey)) + '</text>');
     svg.push('<text class="axis-text" x="' + L + '" y="' + (H - 6) + '">'
       + esc(clockOf(tMin)) + '</text>');
     svg.push('<text class="axis-text" x="' + (W - R) + '" y="' + (H - 6) + '" text-anchor="end">'
@@ -880,8 +889,10 @@ var Otl = (function () {
     // 权限被拒、文件被占用、建表失败，每一种的下一步都不一样。
     if (has('runtime')) {
       $('runtime').innerHTML = kv([
-        ['实际端口', fmtNum(ctx.d.actualPort)],
-        ['配置端口', fmtNum((ctx.d.config || {}).port)
+        // 端口不加千分位 —— "17,890" 会被读成一万七千八百九十
+        ['实际端口', String(ctx.d.actualPort === null || ctx.d.actualPort === undefined
+          ? '–' : ctx.d.actualPort)],
+        ['配置端口', String((ctx.d.config || {}).port === undefined ? '–' : (ctx.d.config || {}).port)
           + (ctx.d.actualPort !== (ctx.d.config || {}).port ? '（冲突已退让）' : '')],
         ['启动于', new Date(ctx.d.startedAt || 0).toLocaleString()],
         ['已运行', Math.round((ctx.d.uptimeMs || 0) / 1000) + ' 秒'],

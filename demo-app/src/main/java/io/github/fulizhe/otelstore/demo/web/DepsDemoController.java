@@ -61,4 +61,9 @@ public class DepsDemoController {
     public Map<String, Object> h2() {
         return deps.callH2();
     }
+
+    @PostMapping("/redis")
+    public Map<String, Object> redis() {
+        return deps.callRedis();
+    }
 }
