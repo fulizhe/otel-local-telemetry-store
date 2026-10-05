@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>otel-local-telemetry-store · 读口</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #161920; --panel-2: #1c2029; --line: #2a2f3a;
+    --fg: #e6e8ee; --dim: #9aa3b2; --warn: #d29922; --ok: #3fb950; --err: #f85149;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #fff; --panel-2: #f0f2f5; --line: #d9dee7;
+      --fg: #1c2128; --dim: #5c6673; --warn: #9a6700; --ok: #1a7f37; --err: #cf222e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  header { padding: 18px 22px 12px; border-bottom: 1px solid var(--line); }
+  h1 { margin: 0 0 6px; font-size: 17px; font-weight: 600; letter-spacing: .2px; }
+  .sub { color: var(--dim); font-size: 13px; }
+  .wrap { padding: 18px 22px 40px; max-width: 1180px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+          padding: 16px 18px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1 1 220px; }
+  input { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line);
+          border-radius: 6px; padding: 7px 10px; font: inherit; min-width: 0; }
+  input:focus { outline: 2px solid var(--dim); outline-offset: -1px; }
+  button { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line);
+           border-radius: 6px; padding: 7px 12px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--dim); }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line);
+           vertical-align: top; }
+  th { color: var(--dim); font-weight: 500; font-size: 12px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pill { display: inline-block; padding: 1px 8px; border: 1px solid var(--line);
+          border-radius: 999px; font-size: 12px; color: var(--dim); }
+  .note { border-left: 3px solid var(--warn); background: var(--panel-2);
+          padding: 10px 12px; border-radius: 0 6px 6px 0; color: var(--dim); }
+  .note b { color: var(--fg); }
+  .err { color: var(--err); }
+  .ok { color: var(--ok); }
+  code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+  .stat { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+  .stat .v { font-size: 20px; font-variant-numeric: tabular-nums; }
+  .stat .k { color: var(--dim); font-size: 12px; }
+  .foot { color: var(--dim); font-size: 12px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>otel-local-telemetry-store · 读口</h1>
+  <div class="sub">
+    只读。端点清单是封闭的，见 <code>docs/adr/adr-06-readout-http-surface.md</code>。
+    <span class="pill" id="tick">每 30s 刷新</span>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="card" id="auth-card" style="display:none">
+    <h2>需要访问 token</h2>
+    <div class="note">
+      这个读口启用了鉴权。token 在数据目录下的 <code>otelstore.token</code> 文件里，
+      由进程启动时随机生成。<b>粘一次即可</b> —— 值只存在本标签页的 sessionStorage，
+      关掉标签页就没了，不进 URL、不进 cookie。
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input id="token" class="grow" type="password" placeholder="粘贴 token" autocomplete="off">
+      <button onclick="saveToken()">保存</button>
+      <button onclick="clearToken()">清除</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>本进程现在收到了什么</h2>
+    <div id="msg" class="foot">加载中…</div>
+    <div class="grid" style="margin-top:12px">
+      <div class="stat"><div class="v" id="s-spans">–</div><div class="k">span 表行数</div></div>
+      <div class="stat"><div class="v" id="s-logs">–</div><div class="k">日志表行数</div></div>
+      <div class="stat"><div class="v" id="s-metrics">–</div><div class="k">指标点行数</div></div>
+      <div class="stat"><div class="v" id="s-resources">–</div><div class="k">Resource 字典行数</div></div>
+    </div>
+    <table style="margin-top:16px">
+      <thead><tr><th>队列</th><th class="num">offered</th><th class="num">drained</th>
+        <th class="num">dropped</th><th class="num">sinkErrors</th><th class="num">backlog</th></tr></thead>
+      <tbody id="queues"><tr><td colspan="6" style="color:var(--dim)">–</td></tr></tbody>
+    </table>
+    <table style="margin-top:16px">
+      <thead><tr><th>环形文件</th><th class="num">写游标</th><th class="num">覆盖轮次</th>
+        <th class="num">最老存活 id</th><th class="num">超限拒写</th><th class="num">过期读</th></tr></thead>
+      <tbody id="rings"><tr><td colspan="6" style="color:var(--dim)">–</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>生效配置</h2>
+    <table><tbody id="config"><tr><td colspan="2" style="color:var(--dim)">–</td></tr></tbody></table>
+  </div>
+
+  <div class="foot">
+    这一页<b>不含任何数据</b>，数据都由页面里的 JS 带头去取 ——
+    所以本页不需要 token，<code>/api/*</code> 才需要。
+    其余端点（trace 与日志列表、指标、Prometheus、自监控、自日志）随 Phase 5 逐段落地。
+  </div>
+</div>
+
+<script>
+  var TOKEN_KEY = 'otelstore-token';
+  $ = function (id) { return document.getElementById(id); };
+
+  function token() { return sessionStorage.getItem(TOKEN_KEY) || ''; }
+  function saveToken() { sessionStorage.setItem(TOKEN_KEY, $('token').value.trim()); refresh(); }
+  function clearToken() { sessionStorage.removeItem(TOKEN_KEY); $('token').value = ''; refresh(); }
+
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function num(v) { return typeof v === 'number' ? v.toLocaleString('en-US') : esc(v); }
+
+  function kv(rows) {
+    return rows.map(function (r) {
+      return '<tr><td>' + esc(r[0]) + '</td><td class="num">' + esc(r[1]) + '</td></tr>';
+    }).join('');
+  }
+
+  function refresh() {
+    var headers = {};
+    var t = token();
+    if (t) { headers['X-Otel-Store-Token'] = t; }
+
+    fetch('/api/summary', { headers: headers, cache: 'no-store' })
+      .then(function (r) {
+        if (r.status === 401) {
+          $('auth-card').style.display = '';
+          $('msg').innerHTML = '<span class="err">读口要求 token（401）。</span> '
+            + '把数据目录下 <code>otelstore.token</code> 的内容粘到上面。';
+          return null;
+        }
+        if (!r.ok) { throw new Error('HTTP ' + r.status); }
+        $('msg').textContent = '更新于 ' + new Date().toLocaleTimeString();
+        return r.json();
+      })
+      .then(function (d) {
+        if (!d) { return; }
+        $('auth-card').style.display = 'none';
+        var store = d.store;
+        if (!store) {
+          $('msg').innerHTML = '<span class="err">存储层未就绪</span> —— '
+            + '本次只计数不落盘，看 <code>queues</code> 那一段。原因是数据目录不可写，'
+            + '详见扩展自己的日志。';
+          $('s-spans').textContent = 'off';
+          $('s-logs').textContent = 'off';
+          $('s-metrics').textContent = 'off';
+          $('s-resources').textContent = 'off';
+        } else {
+          $('s-spans').textContent = num(store.spanRows);
+          $('s-logs').textContent = num(store.logRows);
+          $('s-metrics').textContent = num(store.metricRows);
+          $('s-resources').textContent = num(store.resources);
+        }
+
+        $('queues').innerHTML = ['traces', 'logs', 'metrics'].map(function (sig) {
+          var q = (d.queues || {})[sig] || {};
+          return '<tr><td>' + sig + '</td><td class="num">' + num(q.offered) + '</td>'
+            + '<td class="num">' + num(q.drained) + '</td>'
+            + '<td class="num">' + num(q.dropped) + '</td>'
+            + '<td class="num">' + num(q.sinkErrors) + '</td>'
+            + '<td class="num">' + num(q.backlog) + '</td></tr>';
+        }).join('');
+
+        var rings = [];
+        ['traceRing', 'logRing'].forEach(function (k) {
+          var r = (store || {})[k];
+          if (!r) { return; }
+          rings.push([r.signal + '（' + r.file + '）', r.currIndex, r.wrapCount,
+            r.oldestLiveIndex, r.rejectedTooLarge, r.expiredReads]);
+        });
+        $('rings').innerHTML = rings.length
+          ? rings.map(function (r) {
+              return '<tr><td>' + esc(r[0]) + '</td><td class="num">' + num(r[1]) + '</td>'
+                + '<td class="num">' + num(r[2]) + '</td><td class="num">' + num(r[3]) + '</td>'
+                + '<td class="num">' + num(r[4]) + '</td><td class="num">' + num(r[5]) + '</td></tr>';
+            }).join('')
+          : '<tr><td colspan="6" style="color:var(--dim)">–</td></tr>';
+
+        $('config').innerHTML = kv(Object.keys(d.config || {}).map(function (k) {
+          return [k, d.config[k]];
+        }));
+      })
+      .catch(function (e) {
+        $('msg').innerHTML = '<span class="err">读不到读口：' + esc(e.message) + '</span>';
+      });
+  }
+
+  if (token()) { $('token').value = token(); }
+  refresh();
+  setInterval(refresh, 30000);
+</script>
+</body>
+</html>

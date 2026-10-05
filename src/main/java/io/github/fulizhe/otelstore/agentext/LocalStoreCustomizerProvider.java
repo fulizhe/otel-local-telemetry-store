@@ -1,7 +1,10 @@
 package io.github.fulizhe.otelstore.agentext;
 
 import io.github.fulizhe.otelstore.core.config.LocalStoreConfig;
+import io.github.fulizhe.otelstore.readout.ReadoutQueries;
+import io.github.fulizhe.otelstore.readout.http.HttpReadout;
 import io.github.fulizhe.otelstore.readout.jmx.JmxReadout;
+import java.io.File;
 import io.opentelemetry.sdk.autoconfigure.spi.AutoConfigurationCustomizer;
 import io.opentelemetry.sdk.autoconfigure.spi.AutoConfigurationCustomizerProvider;
 import io.opentelemetry.sdk.autoconfigure.spi.ConfigProperties;
@@ -42,9 +45,22 @@ public final class LocalStoreCustomizerProvider implements AutoConfigurationCust
     /** 进程内单例：三条队列必须共用同一个 hub，否则快照拼不起来。 */
     private static volatile TapHub hub;
 
+    /**
+     * 进程内持有的 HTTP 读口，供读口与测试停它。
+     *
+     * <p>用 {@code AtomicReference} 而不是裸字段：它会被关停钩子与调用方同时碰。
+     */
+    private static final java.util.concurrent.atomic.AtomicReference<HttpReadout> HTTP_READOUT =
+            new java.util.concurrent.atomic.AtomicReference<HttpReadout>();
+
     /** 供读口与测试取用；未初始化时返回 null。 */
     public static TapHub hub() {
         return hub;
+    }
+
+    /** HTTP 读口；未起或已停时为 null。 */
+    public static HttpReadout httpReadout() {
+        return HTTP_READOUT.get();
     }
 
     @Override
@@ -109,14 +125,19 @@ public final class LocalStoreCustomizerProvider implements AutoConfigurationCust
         }
         final LocalStoreConfig config = LocalStoreConfig.from(collected);
         final TapHub created = new TapHub(config);
-        // JMX 是读口的第一条路，也是 Phase 4b 唯一的对账口子：读口没做完之前，
-        // "库里到底存进去没有"只能从这里回答（跨 ClassLoader 的唯一通道，ADR-1 原则 5）。
-        final boolean jmx = JmxReadout.register(config, created.store(), new java.util.function.Supplier<java.util.Map<String, Object>>() {
-            @Override
-            public java.util.Map<String, Object> get() {
-                return created.queuesSnapshot();
-            }
-        });
+        // JMX 与 HTTP 是同一条数据的两张脸（JMX 是跨 ClassLoader 的唯一通道，
+        // HTTP 是给人与抓取器看的），因此两者共用同一个查询层 —— 口径只有一处实现。
+        final ReadoutQueries queries = new ReadoutQueries(config, created.store(),
+                new java.util.function.Supplier<java.util.Map<String, Object>>() {
+                    @Override
+                    public java.util.Map<String, Object> get() {
+                        return created.queuesSnapshot();
+                    }
+                });
+        // JMX 是 Phase 4b 唯一的对账口子；Phase 5 之后它仍在（零网络、跨 ClassLoader 唯一通道）
+        final boolean jmx = JmxReadout.register(config, created.store(), queries);
+        // HTTP 读口：默认开启（ADR-6 第一节）。起不来只降级读口，不影响应用与存储。
+        final boolean http = startHttpReadout(config, queries);
         LOGGER.info("[otel-local-telemetry-store] 已注册三条采集管线"
                 + " dataDir=" + config.getDataDir()
                 + " queueCapacity=" + config.getQueueCapacity()
@@ -124,8 +145,30 @@ public final class LocalStoreCustomizerProvider implements AutoConfigurationCust
                 + " cappedLogsBytes=" + config.getCappedLogsBytes()
                 + " metricIntervalMs=" + METRIC_INTERVAL_MS
                 + " store=" + (created.store() == null ? "unavailable" : "ready")
-                + " jmxReadout=" + (jmx ? JmxReadout.OBJECT_NAME : "off"));
+                + " jmxReadout=" + (jmx ? JmxReadout.OBJECT_NAME : "off")
+                + " httpReadout=" + (http ? "on" : "off"));
         return created;
+    }
+
+    /**
+     * 起 HTTP 读口。失败只降级读口 —— 应用照常、数据照存（ADR-1：绝不让读口的问题变成启动失败）。
+     *
+     * <p>存储层不可用时**不起**：挂一个只会报"没有存储"的空读口，比没有更容易误导。
+     */
+    private static boolean startHttpReadout(final LocalStoreConfig config, final ReadoutQueries queries) {
+        if (queries == null || !queries.isStoreAvailable()) {
+            return false;
+        }
+        try {
+            final HttpReadout readout = HttpReadout.start(config, queries, new File(config.getDataDir()));
+            HTTP_READOUT.set(readout);
+            return true;
+        } catch (final Exception e) {
+            // 读口起不来最常见的原因是端口被占且退让也失败、或数据目录不可写。
+            // 日志里必须有"实际端口"，否则用户找不到它。
+            LOGGER.warning("[otel-local-telemetry-store] HTTP 读口起不来，本次只有 JMX 那条读口（数据照存）：" + e);
+            return false;
+        }
     }
 
     /**

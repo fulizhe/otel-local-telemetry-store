@@ -158,8 +158,12 @@ class LocalStoreSummaryTest {
         final LocalStoreConfig cfg = config(dataDir, null);
         unregister();
         try (LocalStore store = new LocalStore(cfg)) {
-            final boolean first = JmxReadout.register(cfg, store, null);
-            final boolean second = JmxReadout.register(cfg, store, null);
+            // Phase 5 起第三个参数是共享查询层（与 HTTP 读口同一个实例）。
+            // 这里自己建一份 —— 本用例要验的是"重复注册"这件事，与查询层是谁无关。
+            final boolean first = JmxReadout.register(cfg, store,
+                    new io.github.fulizhe.otelstore.readout.ReadoutQueries(cfg, store, null));
+            final boolean second = JmxReadout.register(cfg, store,
+                    new io.github.fulizhe.otelstore.readout.ReadoutQueries(cfg, store, null));
             assertTrue(first, "首次注册应当成功");
             assertFalse(second, "同名 MBean 已存在，第二次应当返回 false 而不是抛异常");
         } finally {

@@ -9,30 +9,33 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 /**
- * JMX 读口。**只做一件事：把 {@link ReadoutQueries} 给的数据渲染成缩进文本。**
+ * JMX 读口。**只做一件事：把共享查询层给的数据渲染成缩进文本。**
  *
- * <p>查询本身全在共享层（那是 Phase 5 抽出来的），因此本类**没有一行 SQL 也没有一个
+ * <p>查询本身全在 {@link ReadoutQueries}，因此本类**没有一行 SQL 也没有一个
  * "查询失败"的 try/catch** —— 它只管排版与措辞。加端点时改这里，加查询时改共享层，
  * 两件事不会再互相缠住。
  *
  * <p><b>每个读方法都自己吞异常</b>：JMX 调用方在另一个 ClassLoader 里，
  * 我们抛过去的任何异常在那边都会变成一句看不懂的 stack trace；
  * 返回一行说明为什么读不到，对排障有用得多。
- *
- * <p>持的是 {@link LocalStore} 实例而不是更窄的查询接口 —— 写方法是 {@code store(...)} 那一族，
- * 签名上就与读方法区分得很开；真正的防线是 {@code readout} 这个包的约定：<b>只读</b>。
  */
 public final class LocalStoreSummary implements LocalStoreSummaryMBean {
 
-    private final LocalStoreConfig config;
-    private final LocalStore store;
     private final ReadoutQueries queries;
 
-    public LocalStoreSummary(final LocalStoreConfig config, final LocalStore store,
+    /**
+     * @param queries 与 HTTP 读口<b>共用同一个实例</b>的共享查询层。
+     *                本类不持有 {@code LocalStore} —— "有没有存储"问 queries 就够了，
+     *                多存一份引用就多一个能变成两套真相的字段。
+     */
+    public LocalStoreSummary(final ReadoutQueries queries) {
+        this.queries = queries;
+    }
+
+    /** 自建一份查询层（独立使用与测试）。生产路径应当走上面那个共用实例的构造。 */
+    LocalStoreSummary(final LocalStoreConfig config, final LocalStore store,
             final Supplier<Map<String, Object>> queuesSnapshot) {
-        this.config = config;
-        this.store = store;
-        this.queries = new ReadoutQueries(config, store, queuesSnapshot);
+        this(new ReadoutQueries(config, store, queuesSnapshot));
     }
 
     @Override
@@ -83,7 +86,7 @@ public final class LocalStoreSummary implements LocalStoreSummaryMBean {
     @Override
     public String recentMetricPoints(final String metricName, final int limit) {
         final List<Map<String, Object>> rows = queries.recentMetricPoints(metricName, limit);
-        if (store == null) {
+        if (!queries.isStoreAvailable()) {
             return "存储层未就绪";
         }
         if (rows == null) {
@@ -99,7 +102,7 @@ public final class LocalStoreSummary implements LocalStoreSummaryMBean {
      * 展开它只会让输出变长而不增加可读性。这是有意的，不是漏了。
      */
     private String rows(final String caption, final List<Map<String, Object>> rows) {
-        if (store == null) {
+        if (!queries.isStoreAvailable()) {
             return "存储层未就绪";
         }
         if (rows == null) {
