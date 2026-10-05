@@ -288,6 +288,59 @@ class HttpReadoutTest {
         }
     }
 
+    /**
+     * 每个页面必须带齐它那份 {@code app.js} 要用的元素 id。
+     *
+     * <p>这条不是为了好看 —— 少一个 id 的表现是<b>整页 JS 抛错、一个数据都不出</b>，
+     * 而 HTML 看上去完全正常（表格在、样式在、就是永远空着）。
+     * 真机上就是这么发现的：{@code index.html} 少了 {@code id="wrap"}，
+     * 注入外壳时抛错，概览四个数字永远显示 "–"。
+     */
+    @Test
+    @DisplayName("每页都带齐它那份 app.js 要用的元素 id（缺一个就整页不工作）")
+    void everyPageHasTheElementsItsScriptNeeds(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final int port = readout.getActualPort();
+            final java.util.Map<String, String[]> required = new java.util.LinkedHashMap<String, String[]>();
+            required.put("/", new String[]{
+                "s-spans", "s-logs", "s-metrics", "s-resources", "msg", "tiles-note"});
+            required.put("/traces.html", new String[]{
+                "spans", "spans-msg", "spans-count", "trace-id", "wrap"});
+            required.put("/logs.html", new String[]{
+                "logs", "logs-msg", "logs-count", "trace-id", "wrap"});
+            required.put("/metrics.html", new String[]{
+                "metrics", "metrics-msg", "metrics-count", "metric-name", "wrap"});
+            required.put("/self.html", new String[]{
+                "queues", "rings", "config", "msg", "s-spans", "tiles-note"});
+
+            for (final java.util.Map.Entry<String, String[]> page : required.entrySet()) {
+                final String body = get(port, page.getKey()).body;
+                assertTrue(body.contains("class=\"wrap\""),
+                        page.getKey() + " 要有 .wrap —— token 卡片注入在它开头");
+                for (final String id : page.getValue()) {
+                    assertTrue(body.contains("id=\"" + id + "\""),
+                            page.getKey() + " 缺少元素 #" + id + "（app.js 会因此抛错，整页不工作）");
+                }
+            }
+
+            // app.js 里每个 has() 判定用到的 id 都得在上面对应页面里找得到。
+            // 这条把"JS 引用了一个不存在的 id"变成编译期可见的失败而不是真机上的白屏。
+            final String js = get(port, "/app.js").body;
+            for (final String id : new String[]{
+                "spans-msg", "logs-msg", "metrics-msg", "spans-count", "logs-count", "metrics-count",
+                "queues", "rings", "config", "s-spans", "s-logs", "s-metrics", "s-resources",
+                "msg", "tiles-note", "detail-overlay", "detail-msg", "detail-body", "detail-kind",
+                "auth-card", "token", "trace-id", "metric-name"}) {
+                assertTrue(js.contains("'" + id + "'") || js.contains("\"" + id + "\""),
+                        "app.js 里引用了 #" + id + "，测试却没在任何页面上钉住它");
+            }
+            assertFalse(js.contains("need(") || js.contains("本页缺少元素"),
+                    "共享脚本不该再对元素 id 做硬要求 —— " +
+                            "那等于让每个页面都得记得写同一个 id，写漏了就是整页 JS 抛错");
+        }
+    }
+
     @Test
     @DisplayName("页面与静态资源同样只读：POST 一律 405")
     void pagesAreReadOnlyToo(@TempDir final File dataDir) throws Exception {

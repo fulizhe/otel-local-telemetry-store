@@ -15,12 +15,15 @@ var Otl = (function () {
 
   function $(id) { return document.getElementById(id); }
 
-  /** 缺元素就报出**是哪个页面缺了哪个 id** —— 否则只会看到 undefined 后面一堆报错。 */
-  function need(id) {
-    var el = $(id);
-    if (!el) { throw new Error('本页缺少元素 #' + id); }
-    return el;
-  }
+  /**
+   * 元素查找**只用** has() 判定，不做"必须有"的硬要求。
+   *
+   * <p>这是真机踩过的坑：注入外壳时对 #wrap 调了"必须有"，
+   * 而某个页面正好没写 id="wrap" —— 于是整个 start() 抛错，
+   * 概览四个数字永远显示 "–"，HTML 看上去却完全正常。
+   * "缺一个 id 就整页 JS 抛错"这件事的表现太隐蔽，不能靠人眼盯。
+   * （这条由测试钉住：每页必须带齐 app.js 引用到的所有 id。）
+   */
   function has(id) { return !!$(id); }
 
   // ---------------- token
@@ -33,7 +36,7 @@ var Otl = (function () {
     return h;
   }
   function saveToken() {
-    sessionStorage.setItem(TOKEN_KEY, need('token').value.trim());
+    sessionStorage.setItem(TOKEN_KEY, token.value.trim());
     restart();
   }
   function clearToken() {
@@ -189,7 +192,10 @@ var Otl = (function () {
         + '<input id="token" class="grow" type="password" placeholder="粘贴 token" autocomplete="off">'
         + '<button onclick="Otl.saveToken()">保存</button>'
         + '<button onclick="Otl.clearToken()">清除</button></div>';
-      var wrap = has('shell-slot') ? $('shell-slot') : need('wrap');
+      // 挂在 .wrap 开头；页面没有 .wrap 就退到 body 末尾。
+      // 这里刻意**不**要求某个固定 id —— 那是"五个页面都得记得写同一个 id"，
+      // 而写漏了的表现是整页 JS 抛错、一个数据都不出。
+      var wrap = document.querySelector('.wrap') || document.body;
       wrap.insertBefore(ac, wrap.firstChild);
     }
     document.addEventListener('keydown', function (ev) {
@@ -519,7 +525,9 @@ var Otl = (function () {
     ['traces', 'logs', 'metrics'].forEach(function (k) {
       if (has(k)) { reload.push(loaders[k]); wireTable(k); }
     });
-    if (has('summary-tiles')) { reload.push(loadSummary(tiles)); }
+    // 行数格子：按**格子本身**在不在来判定，不按外层容器某个 id ——
+    // 否则"容器改名了"会表现成四个数字永远显示 –，看不出是接线断了。
+    if (has('s-spans')) { reload.push(loadSummary(tiles)); }
     if (has('queues') || has('rings') || has('config')) { reload.push(loadSummary(libraryTables)); }
 
     reload.forEach(function (f) { f(); });
