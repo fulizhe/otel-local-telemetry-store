@@ -625,6 +625,35 @@ public final class LocalStore implements AutoCloseable {
         }
     }
 
+    /**
+     * 每个（指标名，属性组合）序列的<b>最新一个点</b>，全指标。
+     *
+     * <p>为什么不能用 {@link #recentMetricPoints(String, int)} 加 limit 代替：
+     * 那个查询按时间倒序取最近 N 行，**如果最新那 N 行恰好都属于同一个属性组合，
+     * 其他组合的最新点就被挤出窗口了** —— 输出的是一个过期的值，而 Prometheus 会当成当前值画出去。
+     * 那不是"少了几条线"，是"画错了"。
+     *
+     * <p>用窗口函数按（指标名, 属性组合）分区各取一行，不受 limit 影响。
+     * 代价是每次调用全表扫一次（行数受 {@code rows.metrics} 水位封顶）。
+     *
+     * <p>行的形态与 {@code recentMetricPoints} 一致，只多保证"每个序列恰好一行"。
+     */
+    public List<Map<String, Object>> latestMetricPoints() throws SQLException {
+        synchronized (lock) {
+            final PreparedStatement ps = conn.prepareStatement(
+                    "SELECT id, metric_name, data_type, ts, resource_id, scope_name, scope_version,"
+                            + " attr_key, unit, metric_value, metric_count, metric_sum, detail"
+                            + " FROM (SELECT m.*, ROW_NUMBER() OVER ("
+                            + "   PARTITION BY m.metric_name, m.attr_key ORDER BY m.ts DESC, m.id DESC) AS rn"
+                            + " FROM metric_point m) WHERE rn = 1");
+            try {
+                return read(ps, METRIC_COLUMNS);
+            } finally {
+                ps.close();
+            }
+        }
+    }
+
     private List<Map<String, Object>> query(final String sql, final String[] columns) throws SQLException {
         synchronized (lock) {
             final PreparedStatement ps = conn.prepareStatement(sql);

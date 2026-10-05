@@ -237,6 +237,25 @@ public final class ReadoutQueries {
     }
 
     /**
+     * 每个（指标名，属性组合）序列的最新一点，供 Prometheus 端点渲染。
+     *
+     * <p><b>不加 limit 是刻意的</b>：Prometheus 要的是"当前值"，
+     * 而按时间倒序截断会把某些序列的最新点挤出窗口、输出一个过期值。
+     * 量的上界由 {@code rows.metrics} 行数水位与序列条数共同决定。
+     */
+    public List<Map<String, Object>> latestMetricPoints() {
+        if (store == null) {
+            return null;
+        }
+        try {
+            return store.latestMetricPoints();
+        } catch (final Exception e) {
+            ThrottledLogger.warn("readout-latest-metrics", "读各序列最新指标点失败", e);
+            return null;
+        }
+    }
+
+    /**
      * 把行里的 {@code resourceId} 展开成那一份 Resource 的规范化文本，按 id 归并。
      *
      * <p>不展开的话读口只能给一串外键数字，排障时还得自己去查字典表 ——

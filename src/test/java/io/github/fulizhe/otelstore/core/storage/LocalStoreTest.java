@@ -262,6 +262,59 @@ class LocalStoreTest {
     }
 
     @Test
+    @DisplayName("每个序列的最新一点：分区取最新，且不受 limit 截断影响")
+    void latestMetricPointsPerSeries(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = new LocalStore(config(dataDir), "test-latest-metrics")) {
+            // 序列 A 连着写 5 条、序列 B 只写 1 条，且 B 的那条最老：
+            // 如果实现是"按时间倒序取最近 N 条"，B 会被挤出窗口而返回不到它
+            for (int i = 0; i < 5; i++) {
+                store.store(metric("orders.processed", "east", 100L + i));
+            }
+            store.store(metric("orders.processed", "west", 50L));
+            for (int i = 0; i < 3; i++) {
+                store.store(metric("http.duration", "east", 200L + i));
+            }
+
+            final List<Map<String, Object>> rows = store.latestMetricPoints();
+            assertEquals(3, rows.size(), "三个序列各一行，实际 " + rows.size());
+
+            final Map<String, Object> eastOrders = findByAttrKey(rows, hashOf("east"));
+            assertNotNull(eastOrders, "east 的那一行必须在：" + rows);
+            assertEquals(Long.valueOf(104L), asLong(eastOrders.get("metricValue")),
+                    "同一个 (指标名, 属性组合) 只保留时间最大的那个点");
+
+            final Map<String, Object> westOrders = findByAttrKey(rows, hashOf("west"));
+            assertNotNull(westOrders, "最老的那条也不能被挤掉 —— 它的序列只有这一点");
+            assertEquals(Long.valueOf(50L), asLong(westOrders.get("metricValue")));
+            assertEquals("orders.processed", westOrders.get("metricName"));
+
+            assertTrue(store.latestMetricPoints().size() <= rows.size(), "同一快照两次读应当一致");
+        }
+    }
+
+    private static Map<String, Object> findByAttrKey(final List<Map<String, Object>> rows, final String key) {
+        for (final Map<String, Object> row : rows) {
+            if (key.equals(row.get("attrKey"))) {
+                return row;
+            }
+        }
+        return null;
+    }
+
+    private static String hashOf(final String attrValue) {
+        return io.github.fulizhe.otelstore.core.storage.CanonicalAttributes.hash(
+                Collections.singletonList(KeyValue.of("region", attrValue)));
+    }
+
+    private static io.github.fulizhe.otelstore.core.model.MetricPointEntry metric(final String name,
+            final String region, final long ts) {
+        return new io.github.fulizhe.otelstore.core.model.MetricPointEntry(name, null, "1",
+                io.github.fulizhe.otelstore.core.model.MetricPointEntry.MetricKind.SUM, ts,
+                resource(), "scope", "1.0",
+                Collections.singletonList(KeyValue.of("region", region)), (double) ts, 0L, Double.NaN, "long");
+    }
+
+    @Test
     @DisplayName("换个看不见 H2 的 TCCL 也照样能开库（模拟 agent 启动时的环境）")
     void opensEvenWhenThreadContextClassLoaderCannotSeeH2(@TempDir final File dataDir) throws Exception {
         // 这条钉的是 2026-10-04 首次挂 agent 时踩到的坑：DriverManager 在类初始化时

@@ -16,6 +16,11 @@
 
 - **`start_time` 不建索引**（adr-02）—— 从 SkyWalking 侧继承的是**推断**，本项目表结构不同，需实测。
   Phase 4b 已落地，**现在就可以实测**；若结论相反就改 ADR-2。
+- **`/metrics` 的标签只有 `attr_key` 哈希**（adr-06 第八节）—— `metric_point` 表只存了属性组合的
+  哈希、没存属性本身，所以 Prometheus 端点目前输出的是 `{attr_key="a3f9c2e1"}` 而不是
+  `{region="east"}`。**要看真标签就得加 `attr_text` 列**（`resource_dict` 已有同一套规范化可用）——
+  建议与 metrics rollup 一起做，不要单独立项。
+- **指标名的撞名处理**：非法字符换 `_`，撞名追加 8 位哈希后缀（adr-06 第八节）。
 - **多实例共用 `dataDir`** —— 明确不支持（adr-04 的前提）。见到有人要支持，先写 ADR。
 - **metrics 的分钟/小时 rollup** —— 本版只定义"时间序列形态 + 行数水位"，汇总表留到后面。
 - **ADR-3 第 4 种（SDK 层截断）真的完全静默吗** —— ADR-3 的结论是"`SpanData` 上没有任何标记"，

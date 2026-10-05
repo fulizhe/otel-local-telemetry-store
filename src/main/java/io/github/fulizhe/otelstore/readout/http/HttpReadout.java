@@ -218,6 +218,13 @@ public static HttpReadout start(final LocalStoreConfig config, final ReadoutQuer
                     serveJson(exchange, queries.summary());
                     return;
                 }
+                if ("/metrics".equals(path)) {
+                    if (!authorized(exchange)) {
+                        return;
+                    }
+                    servePrometheus(exchange);
+                    return;
+                }
                 sendError(exchange, 404, "not_found",
                         "没有这个端点。读口的端点清单是封闭的，见 docs/adr/adr-06-readout-http-surface.md");
             } catch (final RuntimeException e) {
@@ -259,6 +266,25 @@ public static HttpReadout start(final LocalStoreConfig config, final ReadoutQuer
 
         private void serveJson(final HttpExchange exchange, final Object payload) throws IOException {
             writeJson(exchange, 200, Json.write(payload));
+        }
+
+        /**
+         * Prometheus 文本端点。
+         *
+         * <p><b>不是 JSON</b>：抓取器的解析器不接受 JSON，"统一格式"的洁癖在这里
+         * 只能换来一次抓取失败。
+         *
+         * <p>输入是"每个序列的最新一点"而不是"最近 N 行" —— 见
+         * {@code LocalStore} 那条窗口函数查询的注释。
+         */
+        private void servePrometheus(final HttpExchange exchange) throws IOException {
+            final String body = PrometheusText.render(queries.latestMetricPoints());
+            final byte[] bytes = body.getBytes(UTF8);
+            exchange.getResponseHeaders().set("Content-Type",
+                    "text/plain; version=0.0.4; charset=utf-8");
+            exchange.getResponseHeaders().set("Cache-Control", "no-store");
+            exchange.sendResponseHeaders(200, bytes.length);
+            write(exchange, bytes);
         }
 
         private void sendError(final HttpExchange exchange, final int status, final String kind,

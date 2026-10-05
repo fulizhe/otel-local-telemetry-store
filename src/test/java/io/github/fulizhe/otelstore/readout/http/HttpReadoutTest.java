@@ -247,6 +247,54 @@ class HttpReadoutTest {
     }
 
     @Test
+    @DisplayName("/metrics 是 Prometheus 文本，不是 JSON")
+    void metricsEndpointSpeaksPrometheusText(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir)) {
+            store.store(new io.github.fulizhe.otelstore.core.model.MetricPointEntry(
+                    "jvm.memory.used", "堆用了多少", "byte",
+                    io.github.fulizhe.otelstore.core.model.MetricPointEntry.MetricKind.GAUGE,
+                    1700000000000L, null, "io.demo", "1.0",
+                    Collections.singletonList(KeyValue.of("area", "heap")), 1024.0d, 0L, Double.NaN, "double"));
+            try (HttpReadout readout = start(dataDir, 0, false, null, store)) {
+                final Response r = get(readout.getActualPort(), "/metrics");
+                assertEquals(200, r.status);
+                assertTrue(r.contentType.startsWith("text/plain"), r.contentType);
+                assertTrue(r.contentType.contains("version=0.0.4"), "抓取器靠这个参数认版本：" + r.contentType);
+                assertTrue(r.body.contains("# TYPE jvm_memory_used gauge"), r.body);
+                assertTrue(r.body.contains("jvm_memory_used{"), r.body);
+                assertTrue(r.body.contains("attr_key="), "标签里必须有属性组合的哈希：" + r.body);
+                assertFalse(r.body.startsWith("{"), "绝不能是 JSON：" + r.body);
+            } finally {
+                store.close();
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("/metrics 在库里没指标时返回空 body 而不是报错")
+    void metricsEndpointEmptyWhenNoMetrics(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final Response r = get(readout.getActualPort(), "/metrics");
+            assertEquals(200, r.status, "没有指标是正常状态，不是故障");
+            assertEquals("", r.body.trim());
+        }
+    }
+
+    @Test
+    @DisplayName("/metrics 同样受鉴权保护")
+    void metricsEndpointIsGuarded(@TempDir final File dataDir) throws Exception {
+        final String token = "metrics-token";
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, true, token, store)) {
+            final int port = readout.getActualPort();
+            assertEquals(401, get(port, "/metrics").status);
+            assertEquals(401, get(port, "/metrics", "wrong").status);
+            assertEquals(200, get(port, "/metrics", token).status);
+        }
+    }
+
+    @Test
     @DisplayName("/ 是只读页面：不含数据、带 token 输入框、声明不清缓存")
     void pageIsDataFreeShell(@TempDir final File dataDir) throws Exception {
         try (LocalStore store = storeWithOneSpan(dataDir);

@@ -163,6 +163,35 @@ ADR-1 里悬着的"读口跨源取舍"到此关闭。
 **已实测**（2026-10-04，真机挂 agent）：在 `ExtensionClassLoader` 上能正常起、绑定、
 响应、读 jar 内资源。这是选它之前最不确定的一点，现在有答案了。
 
+### 八、`/metrics` 的标签只有 `attr_key` 哈希 —— **这是已知的取舍，不是 bug**
+
+Prometheus 的价值在标签上（`region="east"` 与 `region="west"` 分成两条线）。
+而 `metric_point` 表**只存了属性组合的哈希、没存属性本身**（ADR-2 的表定义），
+所以本阶段的 `/metrics` 只能输出：
+
+```
+orders_processed_total{attr_key="a3f9c2e1",otel_scope_name="…"} 3
+```
+
+**这不好，但比三个替代方案都便宜**：
+
+| | 做法 | 为什么没选 |
+| --- | --- | --- |
+| 加 `attr_text` 列 | 存属性规范化文本（`resource_dict` 已有同一套规范化） | **要多改一次 schema 与 mapper**，而本阶段的重点是把端点铺完；标签这件事等 metrics rollup 那段一起做更省 |
+| 不出标签、同名合并 | 每个指标名只出一行 | **错的**：不同属性组合的值会被加在一起，Prometheus 直接给出错误数据 |
+| 把哈希伪装成属性名 | 输出 `{region="a3f9c2e1"}` | **更坏**：那是撒谎，读者会以为 `a3f9c2e1` 是个真属性 |
+
+同时定下三条口径（ADR-6 第十一节有完整理由）：
+
+- **`SUM` 不改名成 `_total`**。Prometheus 的 `_total` 约定隐含"单调递增"，
+  而我们**没有持久化 `is_monotonic`**（ADR-2 的表里没这列），改名就是撒谎。
+  只用 `# TYPE` 声明它是 counter。
+- 标签给 `attr_key`、以及非空时的 `unit` 与 `otel_scope_name` / `otel_scope_version`。
+- 指标名里的非法字符按 Prometheus 约定换成 `_`，**撞名时追加 8 位哈希后缀**
+  （`a.b` 与 `a_b` → `a_b` 与 `a_b_1f3e9a2c`），保证可逆、不丢信息。
+
+**将来要补的**：`attr_text` 列 + 用真属性当标签。已记在 `docs/adr/index.md` 的「悬着的事」。
+
 ## Considered Options
 
 - **也开一个 JMX remote 端口方便远程监控**：拒绝。无论 HTTP 还是 JMX，**默认都不要求 token**
