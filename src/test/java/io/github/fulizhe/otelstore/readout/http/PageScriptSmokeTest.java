@@ -328,9 +328,37 @@ class PageScriptSmokeTest {
             + "      if (body.indexOf('第二行') < 0) {"
             + " throw new Error('日志正文内容没进弹框：' + body); }\n"
             + "    }\n"
-            + "    console.log('SMOKE-OK');\n"
++ "    console.log('SMOKE-OK');\n"
             + "  }, 10);\n"
-            + "}, 0);\n";
+            + "}, 0);\n"
+            // 趋势图：另跑一遍多点的桩数据。上面那批 ROW 只有 1 个点，
+            // 正好用来验证「只有一个时间点就不画线」这条自我约束不是空话。
+            + "if (DECLARED.indexOf('metrics') >= 0) { checkChart(); }\n"
+            + "function checkChart() {\n"
+            + "  var host = byId['chart'];\n"
+            // 单点：必须明说画不出趋势，而不是画一个点连成横线
+            + "  if ((host.innerHTML || '').indexOf('<svg') >= 0) {\n"
+            + "    throw new Error('只有一个时间点却画了线：一个点连成横线会被读成没变化'); }\n"
+            // 多点：必须画出 SVG，且标明画的是哪个量
+            + "  var many = [];\n"
+            + "  for (var i = 0; i < 12; i++) {\n"
+            + "    many.push({ id: 10 + i, metricName: 'demo.latency', unit: 'ms',\n"
+            + "      dataType: 'HISTOGRAM', metricValue: null, metricCount: 3 + i, metricSum: i,\n"
+            + "      ts: 1700000000000000000 + i * 1000000000, attrKey: 'abcdef0123456789' });\n"
+            + "  }\n"
+            + "  var keep = ROW; ROW = many;\n"
+            + "  Otl.start('chart', ['metrics']);\n"
+            + "  setTimeout(function () {\n"
+            + "    ROW = keep;\n"
++ "    var svg = (byId['chart'] || {}).innerHTML || '';\n"
+            + "    if (svg.indexOf('<svg') < 0) { throw new Error('多点也没画出图：' + svg); }\n"
+            + "    if (svg.indexOf('<path') < 0) { throw new Error('图里没有折线：' + svg); }\n"
+            // 直方图没有单一的值，必须标明画的是「计数」而不是「值」
+            + "    if (svg.indexOf('计数') < 0) { throw new Error('没标明画的是哪个量：' + svg); }\n"
+            // 属性读不出来，图例只能给指标名缀一段哈希（不能拿哈希冒充属性名）
+            + "    if (svg.indexOf('abcdef01') < 0) { throw new Error('图例没给属性哈希：' + svg); }\n"
+            + "  }, 10);\n"
++ "}\n";
     }
 
     /** {@code "tiles,library,"} → {@code "'tiles','library',"} */

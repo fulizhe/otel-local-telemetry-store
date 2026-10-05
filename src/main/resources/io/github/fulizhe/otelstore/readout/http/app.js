@@ -158,6 +158,177 @@ var Otl = (function () {
     return esc(d.flavor);
   }
 
+  // ---------------- 趋势图
+
+  var CHART_COLORS = ['#4c9aff', '#3fb950', '#d29922', '#f85149', '#a371f7',
+                      '#39c5cf', '#e3b341', '#8b949e'];
+
+  /**
+   * 这个形态该画哪个量。
+   *
+   * <p>直方图与摘要**没有单一的值**，所以画的是「计数」这种代理量，
+   * 并把这个名字交给图例标出来。把 sum 标成「值」就是在撒谎（ADR-6 第十四节）。
+   *
+   * @return 可画的量名，或 null 表示这个点没有可画的数字（**不补 0**）
+   */
+  function quantityOf(row) {
+    if (row.dataType === 'GAUGE') {
+      return num(row.metricValue) === null ? null : { key: '值', get: function (r) { return r.metricValue; } };
+    }
+    if (row.dataType === 'SUM') {
+      return num(row.metricSum) === null ? null : { key: '求和', get: function (r) { return r.metricSum; } };
+    }
+    if (row.dataType === 'HISTOGRAM' || row.dataType === 'SUMMARY') {
+      return num(row.metricCount) === null
+          ? null : { key: '计数', get: function (r) { return r.metricCount; } };
+    }
+    return num(row.metricValue) === null ? null : { key: '值', get: function (r) { return r.metricValue; } };
+  }
+
+  function num(v) {
+    if (v === null || v === undefined) { return null; }
+    var n = Number(v);
+    return isNaN(n) ? null : n;
+  }
+
+  /**
+   * 指标趋势图：内联 SVG，与表格共用同一次 /api/metrics 的结果。
+   *
+   * <p>几条自我约束（理由见 ADR-6 第十四节）：
+   * 只画能画对的量并写在图例上；没有数字的点跳过而不是补 0；
+   * 只有一个时间点就不画线；只画前 8 条并说清还剩几条没画。
+   */
+  function renderChart(rows) {
+    var host = $('chart');
+    if (!host) { return; }
+    var list = rows || [];
+    if (!list.length) {
+      host.innerHTML = '<div class="foot">没有指标点，画不出趋势。</div>';
+      return;
+    }
+
+    // 序列 = 指标名 + 属性组合哈希 + 画的量。attrKey 只是哈希，
+    // 所以图例只能给指标名缀一段哈希，不能拿它冒充属性名。
+    var byKey = {};
+    var order = [];
+    list.forEach(function (r) {
+      var q = quantityOf(r);
+      var t = num(r.ts);
+      if (!q || t === null) { return; }
+      var key = r.metricName + '|' + (r.attrKey || '-') + '|' + q.key;
+      if (!byKey[key]) {
+        byKey[key] = { label: r.metricName, attr: r.attrKey || '', unit: r.unit || '',
+                       what: q.key, get: q.get, points: [] };
+        order.push(key);
+      }
+      byKey[key].points.push({ t: t, v: q.get(r) });
+    });
+
+    if (!order.length) {
+      host.innerHTML = '<div class="foot">这些点没有可画的数字（值/求和/计数全为空）—— '
+        + '不补 0，补出来的下跌是假的。</div>';
+      return;
+    }
+
+    var MAX_SERIES = 8;
+    var shown = order.slice(0, MAX_SERIES);
+    var hidden = order.length - shown.length;
+    shown.forEach(function (k) { byKey[k].points.sort(function (a, b) { return a.t - b.t; }); });
+
+    var tMin = Infinity, tMax = -Infinity, vMin = Infinity, vMax = -Infinity, tCount = {};
+    shown.forEach(function (k) {
+      byKey[k].points.forEach(function (p) {
+        tMin = Math.min(tMin, p.t); tMax = Math.max(tMax, p.t);
+        vMin = Math.min(vMin, p.v); vMax = Math.max(vMax, p.v);
+        tCount[p.t] = true;
+      });
+    });
+    if (Object.keys(tCount).length < 2) {
+      host.innerHTML = '<div class="foot">只有一个时间点，'
+        + '画不出趋势 —— 画一个点再连成横线，会被读成"这段时间没变化"。</div>';
+      return;
+    }
+    // 全平的序列：纵轴上下限重合会让所有点都贴在一条边上，读起来像"顶到上限了"
+    if (vMin === vMax) {
+      var pad = Math.abs(vMin) > 0 ? Math.abs(vMin) * 0.05 : 1;
+      vMin -= pad; vMax += pad;
+    }
+
+    var W = 720, H = 190, L = 52, R = 12, T = 12, B = 24;
+    var px = function (t) { return L + (t - tMin) / (tMax - tMin) * (W - L - R); };
+    var py = function (v) { return T + (vMax - v) / (vMax - vMin) * (H - T - B); };
+
+    var svg = ['<svg class="chart" viewBox="0 0 ' + W + ' ' + H + '" role="img"'
+      + ' aria-label="指标趋势图">'];
+    // 三条横向参考线：上界、中间、下界。标出上下限，
+    // 否则两条平线会被读成"两条一样高"而不是"两条各自平的"
+    [vMax, (vMax + vMin) / 2, vMin].forEach(function (v) {
+      svg.push('<line class="grid-line" x1="' + L + '" x2="' + (W - R) + '" y1="' + py(v)
+        + '" y2="' + py(v) + '"/>');
+    });
+    [vMax, vMin].forEach(function (v, i) {
+      svg.push('<text class="axis-text" x="4" y="' + (py(v) + 3) + '">'
+        + esc(clip(fmtNum(round(v)), 8)) + '</text>');
+    });
+    svg.push('<text class="axis-text" x="4" y="' + (T + 8) + '">' + esc(whatUnit(shown, byKey))
+      + '</text>');
+    svg.push('<text class="axis-text" x="' + L + '" y="' + (H - 6) + '">'
+      + esc(clockOf(tMin)) + '</text>');
+    svg.push('<text class="axis-text" x="' + (W - R) + '" y="' + (H - 6) + '" text-anchor="end">'
+      + esc(clockOf(tMax)) + '</text>');
+
+    shown.forEach(function (k, i) {
+      var s = byKey[k];
+      var color = CHART_COLORS[i % CHART_COLORS.length];
+      var d = s.points.map(function (p, j) {
+        return (j ? 'L' : 'M') + px(p.t).toFixed(1) + ' ' + py(p.v).toFixed(1);
+      }).join(' ');
+      svg.push('<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.6"/>');
+      s.points.forEach(function (p) {
+        // 悬浮提示：图表唯一的"读数"途径，坐标轴上不可能标出每个点
+        svg.push('<circle class="dot" cx="' + px(p.t).toFixed(1) + '" cy="' + py(p.v).toFixed(1)
+          + '" r="2.6" fill="' + color + '"><title>' + esc(clockOf(p.t) + '　' + s.what + ' '
+          + fmtNum(round(p.v)) + (s.unit ? ' ' + s.unit : '')) + '</title></circle>');
+      });
+    });
+    svg.push('</svg>');
+
+    var legend = shown.map(function (k, i) {
+      var s = byKey[k];
+      return '<span class="item" title="' + esc(s.label + (s.attr ? ' · ' + s.attr : '')
+        + '（' + s.what + (s.unit ? '，单位 ' + s.unit : '') + '）') + '">'
+        + '<span class="swatch" style="background:' + CHART_COLORS[i % CHART_COLORS.length]
+        + '"></span>' + esc(clip(s.label, 30))
+        + ' <span style="opacity:.7">' + esc(s.what) + (s.attr ? ' · ' + esc(s.attr.slice(0, 8)) : '')
+        + '</span></span>';
+    });
+    if (hidden > 0) {
+      legend.push('<span class="item">还有 ' + hidden + ' 条序列没画</span>');
+    }
+
+    host.innerHTML = svg.join('') + '<div class="legend">' + legend.join('') + '</div>'
+      + '<div class="foot">图与上面的表是<b>同一份数据</b>（同一次 /api/metrics）。'
+      + '悬浮任一点看读数。</div>';
+  }
+
+  function whatUnit(keys, byKey) {
+    var whats = {};
+    keys.forEach(function (k) { whats[byKey[k].what] = true; });
+    var list = Object.keys(whats);
+    return list.length === 1 ? list[0] : list.join(' / ');
+  }
+
+  function round(v) {
+    // 坐标轴上不必精确到小数点后十五位
+    return Math.abs(v) < 1e15 ? Math.round(v * 1000) / 1000 : v;
+  }
+
+  /** epoch 纳秒 → 时:分:秒（趋势图的横轴要的是"几点几分"，不是完整日期）。 */
+  function clockOf(nanos) {
+    var d = new Date(Math.round(nanos / 1000000));
+    return isNaN(d.getTime()) ? '–' : d.toLocaleTimeString();
+  }
+
   function errorText(res) {
     if (res.d && res.d.message) { return res.d.message; }
     return 'HTTP ' + res.s;
@@ -505,6 +676,7 @@ var Otl = (function () {
     }
     $('metrics-msg').textContent = res.d.length ? '共 ' + res.d.length + ' 个点' : '没有指标点。';
     $('metrics-count').textContent = res.d.length + ' 个';
+    renderChart(res.d);
     $('metrics').innerHTML = res.d.map(function (r) {
       return '<tr><td>' + esc(ts(r.ts)) + '</td>'
         + '<td>' + esc(clip(r.metricName, 36))

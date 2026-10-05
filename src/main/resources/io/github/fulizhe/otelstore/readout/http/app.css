@@ -80,6 +80,17 @@ pre.body { background: var(--panel-2); border: 1px solid var(--line); border-rad
            font: 12px/1.5 ui-monospace, Consolas, "Courier New", monospace;
            max-height: 420px; overflow: auto; margin: 0; }
 
+/* 趋势图：内联 SVG，无依赖（ADR-6 第十四节） */
+.chart-wrap { margin-top: 4px; margin-bottom: 14px; }
+svg.chart { width: 100%; height: auto; display: block; background: var(--panel-2);
+             border: 1px solid var(--line); border-radius: 6px; }
+svg.chart .grid-line { stroke: var(--line); stroke-width: 1; }
+svg.chart .axis-text { fill: var(--dim); font-size: 10px; }
+svg.chart .dot { stroke: var(--panel); stroke-width: 1; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 12px; }
+.legend .item { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); }
+.legend .swatch { width: 10px; height: 3px; border-radius: 2px; flex: none; }
+
 /* 索引页的入口卡片 */
 .links { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
 .links a { display: block; text-decoration: none; color: inherit;
