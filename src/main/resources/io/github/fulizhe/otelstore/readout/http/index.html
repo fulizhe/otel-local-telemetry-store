@@ -4,616 +4,82 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>otel-local-telemetry-store · 读口</title>
-<style>
-  :root {
-    --bg: #0f1115; --panel: #161920; --panel-2: #1c2029; --line: #2a2f3a;
-    --fg: #e6e8ee; --dim: #9aa3b2; --warn: #d29922; --ok: #3fb950; --err: #f85149;
-  }
-  @media (prefers-color-scheme: light) {
-    :root {
-      --bg: #f6f7f9; --panel: #fff; --panel-2: #f0f2f5; --line: #d9dee7;
-      --fg: #1c2128; --dim: #5c6673; --warn: #9a6700; --ok: #1a7f37; --err: #cf222e;
-    }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg);
-         font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
-  header { padding: 18px 22px 12px; border-bottom: 1px solid var(--line); }
-  h1 { margin: 0 0 6px; font-size: 17px; font-weight: 600; letter-spacing: .2px; }
-  .sub { color: var(--dim); font-size: 13px; }
-  .wrap { padding: 18px 22px 40px; max-width: 1180px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-          padding: 16px 18px; margin-bottom: 16px; }
-  .card h2 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
-  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .grow { flex: 1 1 220px; }
-  input { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line);
-          border-radius: 6px; padding: 7px 10px; font: inherit; min-width: 0; }
-  input:focus { outline: 2px solid var(--dim); outline-offset: -1px; }
-  button { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line);
-           border-radius: 6px; padding: 7px 12px; font: inherit; cursor: pointer; }
-  button:hover { border-color: var(--dim); }
-  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line);
-           vertical-align: top; }
-  th { color: var(--dim); font-weight: 500; font-size: 12px; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .pill { display: inline-block; padding: 1px 8px; border: 1px solid var(--line);
-          border-radius: 999px; font-size: 12px; color: var(--dim); }
-  .note { border-left: 3px solid var(--warn); background: var(--panel-2);
-          padding: 10px 12px; border-radius: 0 6px 6px 0; color: var(--dim); }
-  .note b { color: var(--fg); }
-  .err { color: var(--err); }
-  .ok { color: var(--ok); }
-  code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
-  .stat { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
-  .stat .v { font-size: 20px; font-variant-numeric: tabular-nums; }
-  .stat .k { color: var(--dim); font-size: 12px; }
-  .foot { color: var(--dim); font-size: 12px; margin-top: 10px; }
-
-  /* 详情是**弹出框**，不是列表下面的一张卡片 ——
-     卡片插在列表里与其它卡片长得一样，看不出"这是临时打开的东西"；
-     弹出框才表达"这是这一行的详情，关掉就回到列表"。 */
-  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55);
-             display: flex; align-items: flex-start; justify-content: center;
-             padding: 40px 16px; z-index: 50; overflow: auto; }
-  .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-           max-width: 900px; width: 100%; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
-  .modal-head { display: flex; align-items: center; gap: 10px;
-                padding: 14px 18px; border-bottom: 1px solid var(--line);
-                position: sticky; top: 0; background: var(--panel); }
-  .modal-head h2 { margin: 0; font-size: 15px; }
-  .modal-body { padding: 16px 18px 22px; }
-  .modal h3 { font-size: 13px; margin: 16px 0 6px; color: var(--fg); }
-</style>
+<link rel="stylesheet" href="app.css">
 </head>
 <body>
-<!-- 详情弹出框。默认 display:none，由 openDetail() 填内容后显示。 -->
-<div class="overlay" id="detail-overlay" style="display:none" onclick="if(event.target===this)closeDetail();">
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="detail-title">
-    <div class="modal-head">
-      <h2 id="detail-title">详情</h2>
-      <span class="pill" id="detail-kind"></span>
-      <span style="flex:1"></span>
-      <button class="ghost" onclick="closeDetail()">关闭 <span style="color:var(--dim)">Esc</span></button>
-    </div>
-    <div class="modal-body">
-      <div id="detail-msg" class="foot"></div>
-      <div id="detail-body"></div>
-    </div>
-  </div>
-</div>
-
 <header>
   <h1>otel-local-telemetry-store · 读口</h1>
   <div class="sub">
-    只读。端点清单是封闭的，见 <code>docs/adr/adr-06-readout-http-surface.md</code>。
+    只读、只在本机进程内。端点清单是封闭的，见 <code>docs/adr/adr-06-readout-http-surface.md</code>。
     <span class="pill" id="tick">每 30s 刷新</span>
   </div>
+  <nav class="pages">
+    <a href="index.html" aria-current="page">索引</a>
+    <a href="traces.html">span</a>
+    <a href="logs.html">日志</a>
+    <a href="metrics.html">指标</a>
+    <a href="self.html">自监控</a>
+  </nav>
 </header>
 
 <div class="wrap">
-
-  <div class="card" id="auth-card" style="display:none">
-    <h2>需要访问 token</h2>
-    <div class="note">
-      这个读口启用了鉴权。token 在数据目录下的 <code>otelstore.token</code> 文件里，
-      由进程启动时随机生成。<b>粘一次即可</b> —— 值只存在本标签页的 sessionStorage，
-      关掉标签页就没了，不进 URL、不进 cookie。
-    </div>
-    <div class="row" style="margin-top:10px">
-      <input id="token" class="grow" type="password" placeholder="粘贴 token" autocomplete="off">
-      <button onclick="saveToken()">保存</button>
-      <button onclick="clearToken()">清除</button>
+  <div class="card">
+    <h2>一页一条线</h2>
+    <div class="links">
+      <a href="traces.html">
+        <div class="t">span</div>
+        <div class="d">调用链。按 trace_id 过滤整条链；点行看属性与事件。</div>
+      </a>
+      <a href="logs.html">
+        <div class="t">日志</div>
+        <div class="d">应用自己产出的日志。点行看完整正文与 trace 关联。</div>
+      </a>
+      <a href="metrics.html">
+        <div class="t">指标</div>
+        <div class="d">指标点的时间序列。直方图给桶上界与累计计数。</div>
+      </a>
+      <a href="self.html">
+        <div class="t">自监控</div>
+        <div class="d">扩展自身：生效配置、库状态、自监控指标、扩展自己的日志。</div>
+      </a>
     </div>
   </div>
 
-  <div class="card">
-    <h2>本进程现在收到了什么</h2>
-    <div id="msg" class="foot">加载中…</div>
-    <div class="grid" style="margin-top:12px">
+  <div class="card" id="summary-tiles">
+    <h2>现在库里有这些行</h2>
+    <div class="grid">
       <div class="stat"><div class="v" id="s-spans">–</div><div class="k">span 表行数</div></div>
       <div class="stat"><div class="v" id="s-logs">–</div><div class="k">日志表行数</div></div>
       <div class="stat"><div class="v" id="s-metrics">–</div><div class="k">指标点行数</div></div>
       <div class="stat"><div class="v" id="s-resources">–</div><div class="k">Resource 字典行数</div></div>
     </div>
-    <table style="margin-top:16px">
-      <thead><tr><th>队列</th><th class="num">offered</th><th class="num">drained</th>
-        <th class="num">dropped</th><th class="num">sinkErrors</th><th class="num">backlog</th></tr></thead>
-      <tbody id="queues"><tr><td colspan="6" style="color:var(--dim)">–</td></tr></tbody>
-    </table>
-    <table style="margin-top:16px">
-      <thead><tr><th>环形文件</th><th class="num">写游标</th><th class="num">覆盖轮次</th>
-        <th class="num">最老存活 id</th><th class="num">超限拒写</th><th class="num">过期读</th></tr></thead>
-      <tbody id="rings"><tr><td colspan="6" style="color:var(--dim)">–</td></tr></tbody>
-    </table>
-  </div>
-
-  <div class="card">
-    <h2>span <span class="pill" id="spans-count"></span></h2>
-    <div class="row">
-      <label for="trace-id">trace_id</label>
-      <input id="trace-id" class="grow" placeholder="粘一个 trace_id（32 位十六进制）看整条调用链；留空看最近的" autocomplete="off">
-      <button onclick="loadLists()">查询</button>
-      <button class="ghost" onclick="clearTrace()">清除</button>
+    <div id="tiles-note" class="foot"></div>
+    <div id="msg" class="foot">加载中…</div>
+    <div class="foot">
+      这是<b>表里现在有的行数</b>，不是"这个进程一共收过多少" ——
+      环形文件写满会覆盖，队列有界会丢弃，两种都只反映当前状态。
     </div>
-    <div id="spans-msg" class="foot"></div>
-    <table>
-      <thead><tr><th>开始</th><th>name</th><th>耗时</th><th>状态</th><th>scope</th><th>资源</th></tr></thead>
-      <tbody id="spans"><tr><td colspan="6" style="color:var(--dim)">–</td></tr></tbody>
-    </table>
   </div>
 
   <div class="card">
-    <h2>日志 <span class="pill" id="logs-count"></span></h2>
-    <div id="logs-msg" class="foot"></div>
+    <h2>给脚本用的入口</h2>
     <table>
-      <thead><tr><th>时间</th><th>severity</th><th>正文预览</th><th>trace</th></tr></thead>
-      <tbody id="logs"><tr><td colspan="4" style="color:var(--dim)">–</td></tr></tbody>
+      <thead><tr><th>端点</th><th>给谁</th></tr></thead>
+      <tbody>
+        <tr><td><code>/metrics</code></td><td>Prometheus 抓取。标签只有 <code>attr_key</code> 哈希（ADR-6 第十一节，已知取舍）</td></tr>
+        <tr><td><code>/api/summary</code></td><td>计数与健康快照的 JSON</td></tr>
+        <tr><td><code>/api/traces</code> <code>/api/logs</code> <code>/api/metrics</code></td><td>上面三个列表页各自的数据源</td></tr>
+        <tr><td><code>/api/traces/{id}</code> <code>/api/logs/{id}</code></td><td>详情弹窗的数据源（<b>只解，不给下载</b>）</td></tr>
+      </tbody>
     </table>
-  </div>
-
-  <div class="card">
-    <h2>指标点 <span class="pill" id="metrics-count"></span></h2>
-    <div class="row">
-      <label for="metric-name">指标名</label>
-      <input id="metric-name" class="grow" placeholder="留空看最近的数据点；填一个指标名看它的序列" autocomplete="off">
-      <button onclick="loadMetrics()">查询</button>
-      <button class="ghost" onclick="$('metric-name').value='';loadMetrics();">清除</button>
+    <div class="foot">
+      <b>这一页不含任何数据</b>，数据都由页面里的 JS 带头去取 ——
+      所以本页不需要 token，<code>/api/*</code> 才需要。
     </div>
-    <div id="metrics-msg" class="foot"></div>
-    <table>
-      <thead><tr><th>时间</th><th>指标</th><th>形态</th><th class="num">值</th>
-        <th class="num">计数</th><th class="num">求和</th><th>结构</th></tr></thead>
-      <tbody id="metrics"><tr><td colspan="7" style="color:var(--dim)">–</td></tr></tbody>
-    </table>
-  </div>
-
-  <div class="card">
-    <h2>生效配置</h2>
-    <table><tbody id="config"><tr><td colspan="2" style="color:var(--dim)">–</td></tr></tbody></table>
-  </div>
-
-  <div class="foot">
-    这一页<b>不含任何数据</b>，数据都由页面里的 JS 带头去取 ——
-    所以本页不需要 token，<code>/api/*</code> 才需要。
-    <br>
-    <b>标签说明</b>：<code>attr_key</code> 是属性组合的<b>哈希</b>而不是属性本身
-    （表里只存了哈希，见 ADR-6 第十一节）——
-    所以现在看到的是 <code>a3f9c2e1</code> 而不是 <code>region="east"</code>。
-    各条线仍然是<b>分开</b>的，只是标签暂时读不懂。
-    <br>
-    其余端点（自监控、自日志）随 Phase 5 逐段落地。
-    <br>
-    <b>载荷说明</b>：载荷可能被环形文件覆盖 —— <b>过期不是故障</b>（容量到顶的预期行为）。
-    真的载荷不可用时详情页会给出四种不同的原因，别把它们看成同一件事。
   </div>
 </div>
 
-<script>
-  var TOKEN_KEY = 'otelstore-token';
-  $ = function (id) { return document.getElementById(id); };
-
-  function token() { return sessionStorage.getItem(TOKEN_KEY) || ''; }
-  function saveToken() { sessionStorage.setItem(TOKEN_KEY, $('token').value.trim()); refresh(); }
-  function clearToken() { sessionStorage.removeItem(TOKEN_KEY); $('token').value = ''; refresh(); }
-
-  function esc(s) {
-    return String(s === null || s === undefined ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
-  function num(v) { return typeof v === 'number' ? v.toLocaleString('en-US') : esc(v); }
-
-  function kv(rows) {
-    return rows.map(function (r) {
-      return '<tr><td>' + esc(r[0]) + '</td><td class="num">' + esc(r[1]) + '</td></tr>';
-    }).join('');
-  }
-
-  function refresh() {
-    var headers = {};
-    var t = token();
-    if (t) { headers['X-Otel-Store-Token'] = t; }
-
-    fetch('/api/summary', { headers: headers, cache: 'no-store' })
-      .then(function (r) {
-        if (r.status === 401) {
-          $('auth-card').style.display = '';
-          $('msg').innerHTML = '<span class="err">读口要求 token（401）。</span> '
-            + '把数据目录下 <code>otelstore.token</code> 的内容粘到上面。';
-          return null;
-        }
-        if (!r.ok) { throw new Error('HTTP ' + r.status); }
-        $('msg').textContent = '更新于 ' + new Date().toLocaleTimeString();
-        return r.json();
-      })
-      .then(function (d) {
-        if (!d) { return; }
-        $('auth-card').style.display = 'none';
-        var store = d.store;
-        if (!store) {
-          $('msg').innerHTML = '<span class="err">存储层未就绪</span> —— '
-            + '本次只计数不落盘，看 <code>queues</code> 那一段。原因是数据目录不可写，'
-            + '详见扩展自己的日志。';
-          $('s-spans').textContent = 'off';
-          $('s-logs').textContent = 'off';
-          $('s-metrics').textContent = 'off';
-          $('s-resources').textContent = 'off';
-        } else {
-          $('s-spans').textContent = num(store.spanRows);
-          $('s-logs').textContent = num(store.logRows);
-          $('s-metrics').textContent = num(store.metricRows);
-          // 字典的计数是**嵌套**的一层（interned / reused / cachedHashes / collisions），
-          // 字典的**行数**就是 interned —— 之前直接把 store.resources 当数字渲染，
-          // 结果页面上出现 [object Object]。
-          $('s-resources').textContent = num((store.resources || {}).interned);
-        }
-
-        $('queues').innerHTML = ['traces', 'logs', 'metrics'].map(function (sig) {
-          var q = (d.queues || {})[sig] || {};
-          return '<tr><td>' + sig + '</td><td class="num">' + num(q.offered) + '</td>'
-            + '<td class="num">' + num(q.drained) + '</td>'
-            + '<td class="num">' + num(q.dropped) + '</td>'
-            + '<td class="num">' + num(q.sinkErrors) + '</td>'
-            + '<td class="num">' + num(q.backlog) + '</td></tr>';
-        }).join('');
-
-        var rings = [];
-        ['traceRing', 'logRing'].forEach(function (k) {
-          var r = (store || {})[k];
-          if (!r) { return; }
-          rings.push([r.signal + '（' + r.file + '）', r.currIndex, r.wrapCount,
-            r.oldestLiveIndex, r.rejectedTooLarge, r.expiredReads]);
-        });
-        $('rings').innerHTML = rings.length
-          ? rings.map(function (r) {
-              return '<tr><td>' + esc(r[0]) + '</td><td class="num">' + num(r[1]) + '</td>'
-                + '<td class="num">' + num(r[2]) + '</td><td class="num">' + num(r[3]) + '</td>'
-                + '<td class="num">' + num(r[4]) + '</td><td class="num">' + num(r[5]) + '</td></tr>';
-            }).join('')
-          : '<tr><td colspan="6" style="color:var(--dim)">–</td></tr>';
-
-        $('config').innerHTML = kv(Object.keys(d.config || {}).map(function (k) {
-          return [k, d.config[k]];
-        }));
-      })
-      .catch(function (e) {
-        $('msg').innerHTML = '<span class="err">读不到读口：' + esc(e.message) + '</span>';
-      });
-  }
-
-  if (token()) { $('token').value = token(); }
-  wireTraceLinks();
-  refresh();
-  loadLists();
-  loadMetrics();
-  setInterval(function () { refresh(); loadLists(); loadMetrics(); }, 30000);
-
-  // ---------------- 列表
-
-  function clearTrace() { $('trace-id').value = ''; loadLists(); }
-
-  function headers() {
-    var h = {};
-    var t = token();
-    if (t) { h['X-Otel-Store-Token'] = t; }
-    return h;
-  }
-
-  function loadLists() {
-    var trace = $('trace-id').value.trim();
-    var q = trace ? '&traceId=' + encodeURIComponent(trace) : '';
-    fetch('/api/traces?limit=20' + q, { headers: headers(), cache: 'no-store' })
-      .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
-      .then(function (res) { renderSpans(res); })
-      .catch(function (e) {
-        $('spans-msg').innerHTML = '<span class="err">读 span 列表失败：' + esc(e.message) + '</span>';
-      });
-
-    fetch('/api/logs?limit=20' + q, { headers: headers(), cache: 'no-store' })
-      .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
-      .then(function (res) { renderLogs(res); })
-      .catch(function (e) {
-        $('logs-msg').innerHTML = '<span class="err">读日志列表失败：' + esc(e.message) + '</span>';
-      });
-  }
-
-  function renderSpans(res) {
-    if (res.s === 401) { $('auth-card').style.display = ''; return; }
-    if (res.s !== 200 || !Array.isArray(res.d)) {
-      $('spans-msg').innerHTML = '<span class="err">' + esc(errorText(res)) + '</span>';
-      return;
-    }
-    $('spans-msg').textContent = res.d.length
-      ? '共 ' + res.d.length + ' 条' + ($('trace-id').value.trim() ? '（该 trace，按开始时间排；点「清除」回到最近）' : '（最近）')
-      : '没有数据 —— 这不是故障：可能是没数据、已被行数水位淘汰、或该 trace 的采集期已过。';
-    $('spans-count').textContent = res.d.length + ' 条';
-    $('spans').innerHTML = res.d.map(function (r) {
-      return '<tr data-detail="' + esc(r.id) + '" data-kind="span" title="点开看详情">'
-        + '<td>' + esc(ts(r.startTime)) + '</td>'
-        + '<td>' + esc(clip(r.name, 48))
-          + (r.traceId ? traceLink(r.traceId) : '')
-          + '</td>'
-        + '<td class="num">' + dur(r.startTime, r.endTime) + '</td>'
-        + '<td>' + statusText(r.statusCode) + '</td>'
-        + '<td>' + esc(clip(r.scopeName, 28)) + '</td>'
-        + '<td>' + esc(clip(r.resource, 40)) + '</td></tr>';
-    }).join('') || '<tr><td colspan="6" style="color:var(--dim)">–</td></tr>';
-  }
-
-  /**
-   * trace 链接：只放 data 属性，**不内联 onclick**。
-   *
-   * <p>内联 onclick 是靠字符串拼接把引号套出来的，那是引号地狱 —— 少一个转义就整段失效，
-   * 而且将来页面一旦有 CSP（script-src 不含 'unsafe-inline'）就全部点不动。
-   * 事件委托（tbody 上一个监听 + data-trace）两种问题都没有。
-   */
-  function traceLink(id) {
-    return ' <a href="#" data-trace="' + esc(id) + '" title="只看这个 trace 的 span 与日志"'
-      + ' style="color:var(--dim);cursor:pointer">trace</a>';
-  }
-
-  function renderLogs(res) {
-    if (res.s === 401) { $('auth-card').style.display = ''; return; }
-    if (res.s !== 200 || !Array.isArray(res.d)) {
-      $('logs-msg').innerHTML = '<span class="err">' + esc(errorText(res)) + '</span>';
-      return;
-    }
-    $('logs-msg').textContent = res.d.length ? '共 ' + res.d.length + ' 条' : '没有数据。';
-    $('logs-count').textContent = res.d.length + ' 条';
-    $('logs').innerHTML = res.d.map(function (r) {
-      return '<tr data-detail="' + esc(r.id) + '" data-kind="log" title="点开看详情">'
-        + '<td>' + esc(ts(r.timestamp)) + '</td>'
-        + '<td>' + esc(clip(r.severityText || severityName(r.severityNumber), 12)) + '</td>'
-        + '<td>' + esc(clip(r.bodyPreview, 90)) + '</td>'
-        + '<td>' + (r.traceId
-            ? '<a href="#" data-trace="' + esc(r.traceId) + '" title="只看这个 trace"'
-              + ' style="color:var(--dim);cursor:pointer">' + esc(clip(r.traceId, 12)) + '…</a>'
-            : '')
-        + '</td></tr>';
-    }).join('') || '<tr><td colspan="4" style="color:var(--dim)">–</td></tr>';
-  }
-
-  /** 事件委托：tbody 上一个监听，管所有 data-trace 链接（新增的行也自动生效）。 */
-  function wireTraceLinks() {
-    ['spans', 'logs'].forEach(function (id) {
-      $(id).addEventListener('click', function (ev) {
-        var a = ev.target.closest ? ev.target.closest('a[data-trace]') : null;
-        if (a) {
-          ev.preventDefault();
-          pickTrace(a.getAttribute('data-trace'));
-          return;
-        }
-        var row = ev.target.closest ? ev.target.closest('tr[data-detail]') : null;
-        if (row) {
-          openDetail(row.getAttribute('data-detail'), row.getAttribute('data-kind'));
-        }
-      });
-    });
-    // 表头行也做成可点的样子 —— 否则"行可点"这件事只能靠猜
-    ['spans', 'logs'].forEach(function (id) {
-      $(id).style.cursor = 'pointer';
-    });
-  }
-
-  // ---------------- 详情
-
-  function closeDetail() {
-    $('detail-overlay').style.display = 'none';
-    document.body.style.overflow = '';
-  }
-
-  function openDetail(id, kind) {
-    var isSpan = kind !== 'log';
-    $('detail-overlay').style.display = 'flex';
-    document.body.style.overflow = 'hidden';   // 背景不该跟着滚
-    $('detail-kind').textContent = (isSpan ? 'span #' : '日志 #') + id;
-    $('detail-msg').textContent = '加载中…';
-    $('detail-body').innerHTML = '';
-    fetch('/api/' + (isSpan ? 'traces/' : 'logs/') + id, { headers: headers(), cache: 'no-store' })
-      .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
-      .then(function (res) {
-        if (res.s === 401) { $('auth-card').style.display = ''; closeDetail(); return; }
-        if (res.s !== 200 || !res.d) {
-          $('detail-msg').innerHTML = '<span class="err">' + esc(errorText(res)) + '</span>';
-          return;
-        }
-        renderDetail(res.d, isSpan);
-      })
-      .catch(function (e) {
-        $('detail-msg').innerHTML = '<span class="err">读详情失败：' + esc(e.message) + '</span>';
-      });
-  }
-
-  /** Esc 关闭 —— 弹出框的标准行为，不用去够鼠标。 */
-  document.addEventListener('keydown', function (ev) {
-    if (ev.key === 'Escape') { closeDetail(); }
-  });
-
-  function renderDetail(d, isSpan) {
-    var head = '<table><tbody>' + kv([
-      ['trace_id', d.traceId], ['span_id', d.spanId],
-      isSpan ? ['parent_span_id', d.parentSpanId] : ['severity', d.severityText || severityName(d.severityNumber)],
-      ['scope', (d.scopeName || '') + (d.scopeVersion ? ' ' + d.scopeVersion : '')],
-      ['资源', d.resource]
-    ]) + '</tbody></table>';
-
-    var p = d.payload || {};
-    var payloadHtml;
-    if (p.available) {
-      payloadHtml = '<div class="foot">载荷 ' + esc(p.bytes) + ' 字节，已解码</div>'
-        + attrTable((p.decoded || {}).attributes)
-        + (isSpan ? eventTable(p.decoded) + statusLine(p.decoded) : '');
-    } else {
-      // 三种"读不到"各有各的说法，**别混成一句"不可用"**：
-      // 过期不是故障、没有载荷不影响查询、corrupt 才是真的坏了
-      var kind = p.reason === 'expired' ? 'note' : 'err';
-      payloadHtml = '<div class="note ' + (kind === 'note' ? '' : 'pending') + '" style="margin-top:10px">'
-        + '<b>' + esc(p.reason || 'unavailable') + '</b> —— ' + esc(p.detail || '') + '</div>';
-    }
-
-    $('detail-msg').innerHTML = '';
-    $('detail-body').innerHTML = head + '<h3>属性</h3>' + payloadHtml;
-  }
-
-  function attrTable(attrs) {
-    if (!attrs || !attrs.length) {
-      return '<div class="foot">没有属性</div>';
-    }
-    return '<table><thead><tr><th>键</th><th>类型</th><th>值</th></tr></thead><tbody>'
-      + attrs.map(function (a) {
-          return '<tr><td>' + esc(a.key) + '</td><td>' + esc(clip(a.type, 18)) + '</td>'
-            + '<td>' + esc(clip(typeof a.value === 'object' ? JSON.stringify(a.value) : a.value, 120))
-            + '</td></tr>';
-        }).join('') + '</tbody></table>';
-  }
-
-  function eventTable(decoded) {
-    var events = (decoded || {}).events || [];
-    if (!events.length) { return ''; }
-    return '<h3>事件（' + events.length + '）</h3>'
-      + '<table><thead><tr><th>时间</th><th>名字</th><th>属性</th></tr></thead><tbody>'
-      + events.map(function (e) {
-          return '<tr><td>' + esc(ts(e.timeUnixNano)) + '</td><td>' + esc(e.name) + '</td>'
-            + '<td>' + esc(clip((e.attributes || []).map(function (a) {
-                return a.key + '=' + a.value;
-              }).join('，'), 100)) + '</td></tr>';
-        }).join('') + '</tbody></table>';
-  }
-
-  function statusLine(decoded) {
-    var s = (decoded || {}).status;
-    if (!s || s.code === 'STATUS_CODE_UNSET') { return ''; }
-    return '<div class="foot" style="margin-top:8px">状态：<b>' + esc(s.code) + '</b> '
-      + esc(s.message || '') + '</div>';
-  }
-
-  function pickTrace(id) {
-    $('trace-id').value = id;
-    loadLists();
-  }
-
-  function loadMetrics() {
-    var name = $('metric-name').value.trim();
-    var q = name ? '?name=' + encodeURIComponent(name) : '';
-    fetch('/api/metrics' + (q || '?limit=20'), { headers: headers(), cache: 'no-store' })
-      .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
-      .then(function (res) { renderMetrics(res); })
-      .catch(function (e) {
-        $('metrics-msg').innerHTML = '<span class="err">读指标点失败：' + esc(e.message) + '</span>';
-      });
-  }
-
-  function renderMetrics(res) {
-    if (res.s === 401) { $('auth-card').style.display = ''; return; }
-    if (res.s !== 200 || !Array.isArray(res.d)) {
-      $('metrics-msg').innerHTML = '<span class="err">' + esc(errorText(res)) + '</span>';
-      return;
-    }
-    $('metrics-msg').textContent = res.d.length ? '共 ' + res.d.length + ' 个点' : '没有指标点。';
-    $('metrics-count').textContent = res.d.length + ' 个';
-    $('metrics').innerHTML = res.d.map(function (r) {
-      return '<tr><td>' + esc(ts(r.ts)) + '</td>'
-        + '<td>' + esc(clip(r.metricName, 36)) + (r.unit ? ' <span class="pill">' + esc(r.unit) + '</span>' : '') + '</td>'
-        + '<td>' + esc(kindName(r.dataType)) + '</td>'
-        + '<td class="num">' + esc(fmtNum(r.metricValue)) + '</td>'
-        + '<td class="num">' + esc(fmtNum(r.metricCount)) + '</td>'
-        + '<td class="num">' + esc(fmtNum(r.metricSum)) + '</td>'
-        + '<td>' + structure(r.detail) + '</td></tr>';
-    }).join('') || '<tr><td colspan="7" style="color:var(--dim)">–</td></tr>';
-  }
-
-  function kindName(k) {
-    if (k === 'SUM') { return 'Sum'; }
-    if (k === 'HISTOGRAM') { return 'Histogram'; }
-    if (k === 'SUMMARY') { return 'Summary'; }
-    return 'Gauge';
-  }
-
-  /** null / NaN 显示成 —，不显示成 "NaN" 或 "null"。 */
-  function fmtNum(v) {
-    if (v === null || v === undefined) { return '–'; }
-    if (typeof v === 'number' && isNaN(v)) { return '–'; }
-    return typeof v === 'number' ? v.toLocaleString('en-US') : String(v);
-  }
-
-  /**
-   * 把 detail 的结构化结果渲染成人能读的形态。
-   * 直方图给「桶边界 → 计数」的对照，摘要给各分位点 —— 而不是原样吐一串 detail 文本。
-   */
-  function structure(d) {
-    if (!d || typeof d !== 'object') { return '–'; }
-    if (d.flavor === 'unknown') {
-      return '<span class="err" title="解析不出来的形态，原文在 title 里">认不出来</span>';
-    }
-    if (d.flavor === 'long' || d.flavor === 'double') {
-      return '<span style="color:var(--dim)">' + esc(d.flavor === 'long' ? '整数' : '浮点') + '</span>';
-    }
-    if (d.flavor === 'explicit' && d.leBoundaries) {
-      // 用服务端算好的 leBoundaries（已含 +Inf）与 cumulative —— 页面不自己数"边界比桶少一个"
-      var le = d.leBoundaries, cum = d.cumulative || [];
-      var pairs = le.map(function (b, i) {
-        var label = (b === 'Infinity' || b === null) ? '+∞' : ('≤' + b);
-        return label + ': ' + (cum[i] !== undefined ? cum[i] : '?');
-      });
-      return '<span style="color:var(--dim)" title="' + esc(pairs.join('，')) + '">'
-        + esc(clip(pairs.join('，'), 80)) + '</span>';
-    }
-    if (d.flavor === 'exponential') {
-      return '<span style="color:var(--dim)">scale=' + esc(d.scale) + ' 零桶=' + esc(d.zeroCount) + '</span>';
-    }
-    if (d.flavor === 'quantiles' && d.quantiles) {
-      return '<span style="color:var(--dim)">'
-        + esc(clip(d.quantiles.map(function (q) {
-            return 'p' + q.quantile + '=' + q.value;
-          }).join('，'), 80)) + '</span>';
-    }
-    return esc(d.flavor);
-  }
-
-  function errorText(res) {
-    if (res.d && res.d.message) { return res.d.message; }
-    return 'HTTP ' + res.s;
-  }
-
-  /** 纳秒 → 本地时间。OTLP 原生就是 epoch nanos，这里只做单位换算（ADR-2 第三条坑）。 */
-  function ts(nanos) {
-    if (nanos === null || nanos === undefined || nanos === 0) { return '–'; }
-    var d = new Date(Math.round(nanos / 1000000));
-    return isNaN(d.getTime()) ? '–' : d.toLocaleTimeString();
-  }
-
-  function dur(from, to) {
-    if (!from || !to || to < from) { return '–'; }
-    var ms = (to - from) / 1000000;
-    return ms < 1 ? ms.toFixed(3) + ' ms' : ms.toFixed(1) + ' ms';
-  }
-
-  function statusText(code) {
-    if (code === 2) { return '<span class="err">ERROR</span>'; }
-    if (code === 1) { return '<span class="ok">OK</span>'; }
-    return 'unset';
-  }
-
-  function severityName(n) {
-    if (n === null || n === undefined) { return ''; }
-    if (n === 0) { return 'UNDEFINED'; }
-    if (n >= 17) { return 'FATAL'; }
-    if (n >= 13) { return 'ERROR'; }
-    if (n >= 9) { return 'INFO'; }
-    if (n >= 5) { return 'DEBUG'; }
-    return 'TRACE';
-  }
-
-  /**
-   * 截断，且**截断可见**。
-   * 半截内容看起来像完整的，比明确写着被截断危险得多（ADR-6 第十节）。
-   */
-  function clip(s, n) {
-    var v = s === null || s === undefined ? '' : String(s);
-    return v.length <= n ? v : v.slice(0, n) + '…';
-  }
-</script>
+<script src="app.js"></script>
+<script>Otl.start('index');</script>
 </body>
 </html>

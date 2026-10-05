@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>自监控 · otel-local-telemetry-store</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <h1>自监控</h1>
+  <div class="sub">
+    这一页说的全是<b>扩展自己</b>，不是被观测的应用。
+    应用的三条信号线在 <a href="traces.html" style="color:var(--dim)">span</a> /
+    <a href="logs.html" style="color:var(--dim)">日志</a> /
+    <a href="metrics.html" style="color:var(--dim)">指标</a> 三个页面。
+  </div>
+  <nav class="pages">
+    <a href="index.html">索引</a>
+    <a href="traces.html">span</a>
+    <a href="logs.html">日志</a>
+    <a href="metrics.html">指标</a>
+    <a href="self.html" aria-current="page">自监控</a>
+  </nav>
+</header>
+
+<div class="wrap" id="wrap">
+
+  <!-- 「扩展自身」与「库状态」是两件不同的事，所以分成两段而不是塞进一张卡片。
+       混在一起会把扩展的队列健康误读成被观测应用的遥测健康。 -->
+
+  <div class="card">
+    <h2>扩展自身</h2>
+    <div class="note">
+      <b>自监控指标</b>（agent 自己的队列深度、采集/解码计数、异常数）还没接上 ——
+      正在做 <code>issue #8</code>，端点是 <code>/api/self</code>。
+      <br>
+      <b>扩展自己的日志</b>还没接上 —— 正在做 <code>issue #9</code>，端点是 <code>/api/self-log</code>。
+      <br>
+      这两块<b>故意留空而不是摆占位数字</b>：空槽位会让人知道还没做，
+      假数字会被人拿去判断系统健康。
+    </div>
+    <div class="foot">
+      在那之前，扩展自己的日志在<b>启动日志</b>里（应用的标准输出/错误），
+      里面能看到 <code>已注册三条采集管线</code>、存储降级原因、限速告警。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>库状态</h2>
+    <div class="grid">
+      <div class="stat"><div class="v" id="s-spans">–</div><div class="k">span 表行数</div></div>
+      <div class="stat"><div class="v" id="s-logs">–</div><div class="k">日志表行数</div></div>
+      <div class="stat"><div class="v" id="s-metrics">–</div><div class="k">指标点行数</div></div>
+      <div class="stat"><div class="v" id="s-resources">–</div><div class="k">Resource 字典行数</div></div>
+    </div>
+    <table style="margin-top:16px">
+      <thead><tr><th>队列</th><th class="num">offered</th><th class="num">drained</th>
+        <th class="num">dropped</th><th class="num">sinkErrors</th><th class="num">backlog</th></tr></thead>
+      <tbody id="queues"><tr><td colspan="6" style="color:var(--dim)">–</td></tr></tbody>
+    </table>
+    <table style="margin-top:16px">
+      <thead><tr><th>环形文件</th><th class="num">写游标</th><th class="num">覆盖轮次</th>
+        <th class="num">最老存活 id</th><th class="num">超限拒写</th><th class="num">过期读</th></tr></thead>
+      <tbody id="rings"><tr><td colspan="6" style="color:var(--dim)">–</td></tr></tbody>
+    </table>
+    <div id="tiles-note" class="foot"></div>
+    <div class="foot">
+      <b>dropped 与 expired 是两件事，别混</b>：环形文件写满是<b>预期行为</b>不是故障
+      （容量到顶就覆盖），所以「过期读」增长不代表出错。
+      <code>rejectedTooLarge</code> 才是需要看的 —— 它说明有载荷超过了
+      <code>max.payload.bytes</code>，被拒了且<b>永远不会</b>进来。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>生效配置</h2>
+    <div class="msg foot" id="msg">加载中…</div>
+    <table><tbody id="config"><tr><td colspan="2" style="color:var(--dim)">–</td></tr></tbody></table>
+    <div class="foot">
+      命名空间是 <code>otel.localstore.*</code>，避开 OTel 自己的
+      <code>otel.traces.*</code> / <code>otel.metrics.*</code> / <code>otel.logs.*</code>。
+      <br>
+      <b>配置永不失败</b>：非法取值回落默认值、不抛异常（见 <code>LocalStoreConfig</code>）。
+      所以这里显示的永远是一份<b>能跑</b>的配置 —— 想知道自己写错了什么，
+      要对源码里的默认值，不是看这一页。
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>Otl.start('self');</script>
+</body>
+</html>

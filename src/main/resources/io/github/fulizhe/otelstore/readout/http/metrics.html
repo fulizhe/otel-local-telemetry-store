@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>指标 · otel-local-telemetry-store</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <h1>指标</h1>
+  <div class="sub">指标点的时间序列。这一页是给人看趋势的；给 Prometheus 抓的是 <code>/metrics</code>。</div>
+  <nav class="pages">
+    <a href="index.html">索引</a>
+    <a href="traces.html">span</a>
+    <a href="logs.html">日志</a>
+    <a href="metrics.html" aria-current="page">指标</a>
+    <a href="self.html">自监控</a>
+  </nav>
+</header>
+
+<div class="wrap" id="wrap">
+  <div class="card">
+    <h2>指标点 <span class="pill" id="metrics-count"></span></h2>
+    <div class="row">
+      <label for="metric-name">指标名</label>
+      <input id="metric-name" class="grow" placeholder="留空看最近的数据点；填一个指标名看它的序列" autocomplete="off">
+      <button onclick="Otl.refresh()">查询</button>
+      <button onclick="document.getElementById('metric-name').value='';Otl.refresh();">清除</button>
+    </div>
+    <div id="metrics-msg" class="foot"></div>
+    <table>
+      <thead><tr><th>时间</th><th>指标</th><th>形态</th><th class="num">值</th>
+        <th class="num">计数</th><th class="num">求和</th><th>结构</th></tr></thead>
+      <tbody id="metrics"><tr><td colspan="7" style="color:var(--dim)">–</td></tr></tbody>
+    </table>
+    <div class="foot">
+      <b>「结构」列是解析过的，不是原文</b>：直方图给「桶上界 → 累计计数」，
+      摘要给各分位点。桶上界与累计由服务端算好（桶比边界多一个，末尾是 <code>+∞</code>）。
+      <br>
+      <b>「认不出来」不是故障</b> —— 它说明这个数据点的 <code>detail</code> 形态没被覆盖，
+      原文在单元格的 title 里。要看解释见 <a href="self.html" style="color:var(--dim)">自监控</a>。
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>Otl.start('metrics');</script>
+</body>
+</html>

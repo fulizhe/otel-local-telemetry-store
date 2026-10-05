@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>span · otel-local-telemetry-store</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <h1>span</h1>
+  <div class="sub">调用链。点行在弹出框里看属性、事件与状态。</div>
+  <nav class="pages">
+    <a href="index.html">索引</a>
+    <a href="traces.html" aria-current="page">span</a>
+    <a href="logs.html">日志</a>
+    <a href="metrics.html">指标</a>
+    <a href="self.html">自监控</a>
+  </nav>
+</header>
+
+<div class="wrap" id="wrap">
+  <div class="card">
+    <h2>span <span class="pill" id="spans-count"></span></h2>
+    <div class="row">
+      <label for="trace-id">trace_id</label>
+      <input id="trace-id" class="grow" placeholder="粘一个 trace_id（32 位十六进制）看整条调用链；留空看最近的" autocomplete="off">
+      <button onclick="Otl.refresh()">查询</button>
+      <button onclick="document.getElementById('trace-id').value='';Otl.refresh();">清除</button>
+    </div>
+    <div id="spans-msg" class="foot"></div>
+    <table>
+      <thead><tr><th>开始</th><th>name</th><th>耗时</th><th>状态</th><th>scope</th><th>资源</th></tr></thead>
+      <tbody id="spans"><tr><td colspan="6" style="color:var(--dim)">–</td></tr></tbody>
+    </table>
+    <div class="foot">
+      从<b>日志页</b>点 trace 链接也会跳到这里并带上 <code>traceId</code> ——
+      跨页筛选只能靠 URL 携带。
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>Otl.start('traces');</script>
+</body>
+</html>

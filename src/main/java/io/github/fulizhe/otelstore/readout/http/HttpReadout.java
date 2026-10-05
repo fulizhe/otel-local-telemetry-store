@@ -214,9 +214,12 @@ public static HttpReadout start(final LocalStoreConfig config, final ReadoutQuer
                     return;
                 }
 
-                final String path = exchange.getRequestURI().getPath();
-                if ("/".equals(path) || "/index.html".equals(path)) {
-                    servePage(exchange);
+final String path = exchange.getRequestURI().getPath();
+                // 页面资源走一张**硬编码常量表**做精确匹配（ADR-6 第十三节）。
+                // 绝不把请求路径拼进 getResourceAsStream() —— 那正是路径穿越的口子。
+                final String asset = PAGE_ASSETS.get(path);
+                if (asset != null) {
+                    servePage(exchange, asset);
                     return;
                 }
                 // 路径参数端点：**只做前缀匹配，不做通配、不做多段、不做正则**（ADR-6 第七节）。
@@ -285,9 +288,16 @@ public static HttpReadout start(final LocalStoreConfig config, final ReadoutQuer
             return false;
         }
 
-        private void servePage(final HttpExchange exchange) throws IOException {
-            final byte[] body = loadPage();
-            exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+private void servePage(final HttpExchange exchange, final String asset) throws IOException {
+            final byte[] body = loadAsset(asset);
+            if (body == null) {
+                // 页面是增强项，取不到就退成一行说明，而不是让整个读口 500
+                writePlain(exchange, 200,
+                        "<!doctype html><meta charset=\"utf-8\"><p>读口页面资源缺失（"
+                                + asset + "），其余端点正常。</p>");
+                return;
+            }
+            exchange.getResponseHeaders().set("Content-Type", contentTypeOf(asset));
             // 页面是不含数据的壳，所以不需要 token（ADR-6 第四节）。
             // 但它也不该被缓存住：token 输入框与自动刷新都要求每次回源。
             exchange.getResponseHeaders().set("Cache-Control", "no-store");
@@ -667,6 +677,14 @@ public static HttpReadout start(final LocalStoreConfig config, final ReadoutQuer
         write(exchange, bytes);
     }
 
+    private static void writePlain(final HttpExchange exchange, final int status, final String body)
+            throws IOException {
+        final byte[] bytes = body.getBytes(UTF8);
+        exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+        exchange.sendResponseHeaders(status, bytes.length);
+        write(exchange, bytes);
+    }
+
     private static void write(final HttpExchange exchange, final byte[] body) throws IOException {
         if ("HEAD".equals(exchange.getRequestMethod())) {
             return;
@@ -679,12 +697,47 @@ public static HttpReadout start(final LocalStoreConfig config, final ReadoutQuer
         }
     }
 
-    private static byte[] loadPage() throws IOException {
-        final InputStream in = HttpReadout.class.getResourceAsStream("index.html");
+/**
+     * 页面与静态资源：请求路径 → jar 内资源名，<b>精确匹配</b>。
+     *
+     * <p>值是<b>写死的资源名</b>，不是把 path 去掉斜杠拼出来的东西。
+     * 差别就是安全与不安全的差别：若让 path 参与资源名拼接，
+     * {@code /..%2f..%2fwhatever} 就是一个现成的穿越口子；
+     * 查表则只认这 7 个字符串，{@code /app.css/x}、{@code /app.css%2f..}
+     * 与任何别的路径一律 404（与 ADR-6 第七节同一条道理，只是用在静态资源上）。
+     *
+     * <p><b>故意没有无后缀别名</b>（{@code /traces}）：少一条要维护的路径，
+     * 索引页已经把入口给全了。别名带来的"猜得中"不值这个模糊地带。
+     */
+    private static final java.util.Map<String, String> PAGE_ASSETS;
+    static {
+        final java.util.Map<String, String> m = new java.util.HashMap<String, String>();
+        m.put("/", "index.html");
+        m.put("/index.html", "index.html");
+        m.put("/traces.html", "traces.html");
+        m.put("/logs.html", "logs.html");
+        m.put("/metrics.html", "metrics.html");
+        m.put("/self.html", "self.html");
+        m.put("/app.css", "app.css");
+        m.put("/app.js", "app.js");
+        PAGE_ASSETS = java.util.Collections.unmodifiableMap(m);
+    }
+
+    private static String contentTypeOf(final String asset) {
+        if (asset.endsWith(".css")) {
+            return "text/css; charset=utf-8";
+        }
+        if (asset.endsWith(".js")) {
+            // application/javascript 而不是 text/javascript：后者在 HTML 标准里已废弃
+            return "application/javascript; charset=utf-8";
+        }
+        return "text/html; charset=utf-8";
+    }
+
+    private static byte[] loadAsset(final String name) throws IOException {
+        final InputStream in = HttpReadout.class.getResourceAsStream(name);
         if (in == null) {
-            // 页面是增强项，取不到就退成一行说明，而不是让整个读口 500
-            return "<!doctype html><meta charset=\"utf-8\"><p>读口页面资源缺失，其余端点正常。</p>"
-                    .getBytes(UTF8);
+            return null;
         }
         try {
             final java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(8192);

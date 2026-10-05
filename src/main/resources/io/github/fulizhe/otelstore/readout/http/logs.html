@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>日志 · otel-local-telemetry-store</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <h1>日志</h1>
+  <div class="sub">应用自己产出的日志。点行在弹出框里看完整正文。</div>
+  <nav class="pages">
+    <a href="index.html">索引</a>
+    <a href="traces.html">span</a>
+    <a href="logs.html" aria-current="page">日志</a>
+    <a href="metrics.html">指标</a>
+    <a href="self.html">自监控</a>
+  </nav>
+</header>
+
+<div class="wrap" id="wrap">
+  <div class="card">
+    <h2>日志 <span class="pill" id="logs-count"></span></h2>
+    <div class="row">
+      <label for="trace-id">trace_id</label>
+      <input id="trace-id" class="grow" placeholder="留空看最近的；填一个 trace_id 只看这一条链上的日志" autocomplete="off">
+      <button onclick="Otl.refresh()">查询</button>
+      <button onclick="document.getElementById('trace-id').value='';Otl.refresh();">清除</button>
+    </div>
+    <div id="logs-msg" class="foot"></div>
+    <table>
+      <thead><tr><th>时间</th><th>severity</th><th>正文预览</th><th>trace</th></tr></thead>
+      <tbody id="logs"><tr><td colspan="4" style="color:var(--dim)">–</td></tr></tbody>
+    </table>
+    <div class="foot">
+      点 <code>trace</code> 跳到 <a href="traces.html" style="color:var(--dim)">span 页</a>看整条链。
+      <br>
+      <b>正文是预览</b>：超长会被截断并在末尾加 <code>…</code>，
+      完整正文在详情弹窗里 —— 半截内容看起来像完整的，比明确写着被截断危险得多。
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>Otl.start('logs');</script>
+</body>
+</html>

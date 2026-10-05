@@ -17,6 +17,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.ServerSocket;
@@ -84,12 +85,19 @@ class HttpReadoutTest {
         final String body;
         final String contentType;
         final String allow;
+        final String cacheControl;
 
         Response(final int status, final String body, final String contentType, final String allow) {
+            this(status, body, contentType, allow, null);
+        }
+
+        Response(final int status, final String body, final String contentType, final String allow,
+                final String cacheControl) {
             this.status = status;
             this.body = body;
             this.contentType = contentType;
             this.allow = allow;
+            this.cacheControl = cacheControl;
         }
     }
 
@@ -115,7 +123,8 @@ class HttpReadoutTest {
             in.close();
         }
         return new Response(status, new String(out.toByteArray(), UTF8),
-                conn.getHeaderField("Content-Type"), conn.getHeaderField("Allow"));
+                conn.getHeaderField("Content-Type"), conn.getHeaderField("Allow"),
+                conn.getHeaderField("Cache-Control"));
     }
 
     private static Response get(final int port, final String path) throws IOException {
@@ -129,6 +138,168 @@ class HttpReadoutTest {
 
     private static String read(final File file) throws IOException {
         return new String(java.nio.file.Files.readAllBytes(file.toPath()), UTF8).trim();
+    }
+
+    /**
+     * 走裸 socket 发一条**原样**的请求行。
+     *
+     * <p>穿越类路径不能用 {@link java.net.URL} 发 —— {@code HttpURLConnection}
+     * 会先把 {@code ../} 归一化掉，那样测的就不是"读口收到了什么"，
+     * 而是"JDK 客户端替我们改了什么"。而这恰恰是读口必须自己守住的那道门。
+     */
+    private static Response rawGet(final int port, final String rawPath) throws IOException {
+        try (java.net.Socket socket = new java.net.Socket("127.0.0.1", port)) {
+            socket.setSoTimeout(5000);
+            final OutputStream out = socket.getOutputStream();
+            final String req = "GET " + rawPath + " HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                    + "Connection: close\r\n\r\n";
+            out.write(req.getBytes("ISO-8859-1"));
+            out.flush();
+            final InputStream in = socket.getInputStream();
+            final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+            final byte[] chunk = new byte[4096];
+            int n;
+            while ((n = in.read(chunk)) != -1) {
+                buf.write(chunk, 0, n);
+            }
+            socket.shutdownOutput();
+            final String raw = new String(buf.toByteArray(), "ISO-8859-1");
+            final int headEnd = raw.indexOf("\r\n\r\n");
+            final String head = headEnd < 0 ? raw : raw.substring(0, headEnd);
+            final String bodyText = headEnd < 0 ? "" : raw.substring(headEnd + 4);
+            final String[] lines = head.split("\r\n");
+            int status = -1;
+            String contentType = null;
+            for (final String line : lines) {
+                if (line.startsWith("HTTP/1.")) {
+                    status = Integer.parseInt(line.split(" ")[1]);
+                } else if (line.toLowerCase(java.util.Locale.ROOT).startsWith("content-type:")) {
+                    contentType = line.substring("content-type:".length()).trim();
+                }
+            }
+            // Connection: close 时 body 就是全部；chunked 编码的内容对 404 断言没有意义
+            return new Response(status, bodyText, contentType, null);
+        }
+    }
+
+    @Test
+    @DisplayName("读口拆成多页：/ 是索引且不含数据表，各页只放自己那条线")
+    void pagesAreSplitAndIndexHasNoDataTable(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final int port = readout.getActualPort();
+
+            final String index = get(port, "/").body;
+            for (final String page : new String[]{
+                    "traces.html", "logs.html", "metrics.html", "self.html"}) {
+                assertTrue(index.contains(page), "索引页要给出 " + page + " 的入口：" + index);
+            }
+            // 索引页一旦又开始长出数据表，"一页一条线"就名存实亡了
+            for (final String tableId : new String[]{
+                    "id=\"spans\"", "id=\"logs\"", "id=\"metrics\"", "id=\"config\"", "id=\"queues\""}) {
+                assertFalse(index.contains(tableId), "索引页不该有数据表 " + tableId + "：" + index);
+            }
+
+            final String traces = get(port, "/traces.html").body;
+            assertTrue(traces.contains("id=\"spans\""), traces);
+            assertFalse(traces.contains("id=\"logs\""), "span 页不该带日志表：" + traces);
+
+            final String logs = get(port, "/logs.html").body;
+            assertTrue(logs.contains("id=\"logs\""), logs);
+            assertFalse(logs.contains("id=\"spans\""), "日志页不该带 span 表：" + logs);
+
+            final String metrics = get(port, "/metrics.html").body;
+            assertTrue(metrics.contains("id=\"metrics\""), metrics);
+            assertFalse(metrics.contains("id=\"spans\""), "指标页不该带 span 表：" + metrics);
+
+            // 生效配置属于扩展自身，因此只该出现在自监控页
+            final String self = get(port, "/self.html").body;
+            assertTrue(self.contains("id=\"config\""), "生效配置要挪到自监控页：" + self);
+            assertTrue(self.contains("id=\"queues\""), self);
+            for (final String other : new String[]{"/", "/traces.html", "/logs.html", "/metrics.html"}) {
+                assertFalse(get(port, other).body.contains("id=\"config\""),
+                        other + " 不该出现生效配置");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("自监控页写明 #8/#9 还没接上，而不是摆占位数字")
+    void selfPageIsHonestAboutWhatIsMissing(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final String self = get(readout.getActualPort(), "/self.html").body;
+            assertTrue(self.contains("还没接上"), "没做的部分要写明没做：" + self);
+            assertTrue(self.contains("#8") && self.contains("#9"), "要给出 issue 号：" + self);
+            assertTrue(self.contains("/api/self") && self.contains("/api/self-log"),
+                    "要给出将来的端点名：" + self);
+        }
+    }
+
+    @Test
+    @DisplayName("共享静态资源由读口提供，且 Content-Type 正确")
+    void staticAssetsAreServedWithRightContentType(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final int port = readout.getActualPort();
+
+            final Response css = get(port, "/app.css");
+            assertEquals(200, css.status);
+            assertTrue(css.contentType.startsWith("text/css"), String.valueOf(css.contentType));
+            assertTrue(css.body.contains(".card"), css.body);
+
+            final Response js = get(port, "/app.js");
+            assertEquals(200, js.status);
+            assertTrue(js.contentType.startsWith("application/javascript"),
+                    String.valueOf(js.contentType));
+            assertTrue(js.body.contains("Otl"), js.body);
+
+            // 每个页面都引同一份资源 —— 复制就会漂移
+            for (final String page : new String[]{"/", "/traces.html", "/logs.html",
+                    "/metrics.html", "/self.html"}) {
+                final String body = get(port, page).body;
+                assertTrue(body.contains("href=\"app.css\""), page + " 要引 app.css");
+                assertTrue(body.contains("src=\"app.js\""), page + " 要引 app.js");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("页面路径是精确匹配：多段、穿越、无后缀别名一律 404")
+    void pagePathsAreExactMatchSoTraversalIsNotPossible(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final int port = readout.getActualPort();
+            for (final String raw : new String[]{
+                "/app.css/x",
+                "/app.css%2f..",
+                "/app.css/../app.js",
+                "/index.html/x",
+                "/..%2fapp.js",
+                "/traces",              // 故意不给无后缀别名
+                "/logs/",
+                "/unknown.html",
+                "/app.cssx"}) {
+                assertEquals(404, rawGet(port, raw).status, raw + " 必须 404");
+            }
+            // 精确匹配的那些要真的拿到
+            assertEquals(200, rawGet(port, "/app.css").status);
+            assertEquals(200, rawGet(port, "/").status);
+        }
+    }
+
+    @Test
+    @DisplayName("页面与静态资源同样只读：POST 一律 405")
+    void pagesAreReadOnlyToo(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final int port = readout.getActualPort();
+            for (final String page : new String[]{"/", "/self.html", "/app.js"}) {
+                final Response r = call(port, page, "POST", null, null);
+                assertEquals(405, r.status, page + " 应当被拒");
+                assertEquals("GET, HEAD", r.allow, page + " 的 405 要说明允许什么");
+            }
+        }
     }
 
     @Test
@@ -648,29 +819,38 @@ class HttpReadoutTest {
         }
     }
 
-    @Test
+@Test
     @DisplayName("/ 是只读页面：不含数据、带 token 输入框、声明不清缓存")
     void pageIsDataFreeShell(@TempDir final File dataDir) throws Exception {
         try (LocalStore store = storeWithOneSpan(dataDir);
              HttpReadout readout = start(dataDir, 0, false, null, store)) {
-            final Response r = get(readout.getActualPort(), "/");
+            final int port = readout.getActualPort();
+            final Response r = get(port, "/");
             assertEquals(200, r.status);
             assertTrue(r.contentType.startsWith("text/html"), r.contentType);
             assertTrue(r.body.contains("<!doctype html>"), "应当是 HTML 页面");
-            assertTrue(r.body.contains("X-Otel-Store-Token"),
-                    "页面必须知道那个请求头名，否则启用鉴权时它连数据都取不到");
-            assertTrue(r.body.contains("sessionStorage"), "token 只能放 sessionStorage");
-                assertFalse(r.body.contains("?token="), "token 绝不能进 URL");
-                assertFalse(r.body.contains("demo-span"), "页面本身不含数据 —— 数据由 JS 带头去取");
+            assertEquals("no-store", r.cacheControl, "页面里有自动刷新与 token 输入框，不能被缓存住");
 
-                // 动态生成的行里**不许有内联 onclick**。
-                // 内联 onclick 只能靠字符串拼接把引号套出来（引号地狱），
-                // 而且页面一旦有 CSP（script-src 不含 'unsafe-inline'）就全部点不动。
-                // 事件委托（tbody 一个监听 + data-trace）两种问题都没有。
-                assertTrue(r.body.contains("data-trace="), "trace 链接必须用 data 属性：" + shortTail(r.body));
-                assertTrue(r.body.contains("wireTraceLinks"), "必须有事件委托的接线");
-                assertFalse(r.body.contains("onclick=\"pickTrace("),
-                        "动态行里不该有内联 onclick：" + shortTail(r.body));
+            // 逻辑在共享脚本里（ADR-6 第十三节），所以这些断言要看 app.js 而不是 /
+            final String js = get(port, "/app.js").body;
+            assertTrue(js.contains("X-Otel-Store-Token"),
+                    "页面必须知道那个请求头名，否则启用鉴权时它连数据都取不到");
+            assertTrue(js.contains("sessionStorage"), "token 只能放 sessionStorage");
+            assertFalse(js.contains("?token="), "token 绝不能进 URL");
+            for (final String page : new String[]{"/", "/traces.html", "/logs.html",
+                    "/metrics.html", "/self.html"}) {
+                assertFalse(get(port, page).body.contains("demo-span"),
+                        page + " 本身不含数据 —— 数据由 JS 带头去取");
+            }
+
+            // 动态生成的行里**不许有内联 onclick**。
+            // 内联 onclick 只能靠字符串拼接把引号套出来（引号地狱），
+            // 而且页面一旦有 CSP（script-src 不含 'unsafe-inline'）就全部点不动。
+            // 事件委托（tbody 一个监听 + data-trace）两种问题都没有。
+            assertTrue(js.contains("data-trace="), "trace 链接必须用 data 属性：" + shortTail(js));
+            assertTrue(js.contains("wireTable"), "必须有事件委托的接线");
+            assertFalse(js.contains("onclick=\"pickTrace("),
+                    "动态行里不该有内联 onclick：" + shortTail(js));
         }
     }
 
@@ -679,12 +859,12 @@ class HttpReadoutTest {
     void pageReadsNestedValuesInsteadOfStringifyingObjects(@TempDir final File dataDir) throws Exception {
         try (LocalStore store = storeWithOneSpan(dataDir);
              HttpReadout readout = start(dataDir, 0, false, null, store)) {
-            final String page = get(readout.getActualPort(), "/").body;
+            final String js = get(readout.getActualPort(), "/app.js").body;
             // store.resources 是嵌套的一层（interned/reused/cachedHashes/collisions），
             // 字典行数就是 interned。直接渲染 store.resources 会得到 [object Object]。
-            assertTrue(page.contains("(store.resources || {}).interned"),
-                    "页面必须取深层字段，不能直接渲染对象：" + page);
-            assertFalse(page.contains("num(store.resources)"), "那正是会渲染成 [object Object] 的写法");
+            assertTrue(js.contains("(store.resources || {}).interned"),
+                    "页面必须取深层字段，不能直接渲染对象：" + shortTail(js));
+            assertFalse(js.contains("num(store.resources)"), "那正是会渲染成 [object Object] 的写法");
         }
     }
 

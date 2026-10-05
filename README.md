@@ -113,7 +113,7 @@ java -javaagent:opentelemetry-javaagent.jar \
 | 途径 | 适合 |
 | --- | --- |
 | 应用日志里每 60 秒一行 `周期 dataDir=… \| store spans=N logs=N metricPoints=N resources=M` | 快速自查"有没有收到、存了多少" |
-| 浏览器打开读口那侧 `http://<host>:17890/` | 交互式排查：计数、队列、环形文件、配置、span 与日志列表、按 trace_id 看整条调用链 |
+| 浏览器打开读口那侧 `http://<host>:17890/` | 交互式排查：索引页给各页入口；`traces.html` / `logs.html` / `metrics.html` 看三条线，`self.html` 看生效配置、库状态与自监控。点 span 或日志的行会弹出详情 |
 | `jconsole` → MBeans → `io.github.fulizhe.otelstore` → `LocalStoreSummary` | 进程内的完整快照（`summary` / `recentSpans` / `spansOfTrace` / `spanPayloadHex`） |
 
 那行周期汇总是本扩展**唯一默认的周期性日志输出**；不想看就把
@@ -126,14 +126,21 @@ java -javaagent:opentelemetry-javaagent.jar \
 
 | 端点 | 返回 |
 | --- | --- |
-| `/` | 只读页面（不含任何数据，数据由页面里的 JS 带头去取） |
+| `/` `/index.html` | **索引页**：概览 + 各页面入口。**不含任何数据** |
+| `/traces.html` | span 列表页（不含数据，数据由页面 JS 带头去取） |
+| `/logs.html` | 日志列表页，同上 |
+| `/metrics.html` | 指标点页，同上 |
+| `/self.html` | 扩展自身页：生效配置、库状态、自监控、自日志，同上 |
+| `/app.css` `/app.js` | 各页面共享的样式与脚本 |
 | `/api/summary` | 计数与健康：生效配置 / 三条队列 / 各表行数 / 两个环的写游标与覆盖轮次 |
 | `/api/traces?limit=&traceId=` | span 表头行（**不含载荷**），按 id 倒序；给了 `traceId` 则按开始时间排 |
 | `/api/logs?limit=&traceId=` | 日志表头行，同上 |
-| `/api/metrics?name=&limit=` | 指标点的**时间序列**（给了 `name` 则只看那个指标；不给就是最近若干个）。`detail` 结构化返回：桶边界、各桶计数、分位点 |
+| `/api/metrics?name=&limit=` | 指标点的**时间序列**（给了 `name` 则只看那个指标；不给就是最近若干个）。`detail` 结构化返回：桶上界（含 `+Inf`）、累计计数、分位点 |
 | `/api/traces/{id}` `/api/logs/{id}` | 单条详情：表头 + 载荷状态 + **解码后的** attributes / events / status。`{id}` 必须是纯数字 |
 | `/metrics` | Prometheus 文本（每个指标每个属性组合的**当前值**） |
 | `/api/self` `/api/self-log` | 随 Phase 5 后续两段落地 |
+
+页面**路径精确匹配**，没有无后缀别名（`/traces` 会 404，入口都在 `/`）。
 
 `limit` 默认 20、上限 200（`/metrics` 不限，它按序列给）。
 **没有数据返回 200 + 空数组**，只有参数非法才 4xx —— 「没有数据」与「请求写错了」必须能分开。
