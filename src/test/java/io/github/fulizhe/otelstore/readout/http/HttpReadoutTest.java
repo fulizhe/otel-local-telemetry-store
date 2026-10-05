@@ -341,6 +341,42 @@ class HttpReadoutTest {
         }
     }
 
+    /**
+     * 键值表的值列必须**左对齐**，键列定宽。
+     *
+     * <p>真机反馈：键在左、值右对齐"很难一眼对齐"。
+     * 右对齐的列看着整齐，是因为每行的**右端**对齐 —— 而扫两列对照时人横向读，
+     * 眼睛要逐行重新对焦，值的长度一变起点就跟着动。
+     * 键列定宽 + 值左对齐后，所有值从同一条竖线开始，竖着走一遍就能对上。
+     */
+    @Test
+    @DisplayName("键值表：键定宽、值左对齐（右对齐的值列最难扫）")
+    void keyValueTablesAreLeftAlignedNotRightAligned(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final int port = readout.getActualPort();
+
+            // kv() 是「键 → 值」表唯一的实现（详情弹窗头 + 生效配置两处都用它）
+            final String js = get(port, "/app.js").body;
+            assertTrue(js.contains("function kv(rows)"), js);
+            assertTrue(js.contains("<td class=\"k\">"), "键列要标成 .k 才能定宽：" + shortTail(js));
+            final String kv = js.substring(js.indexOf("function kv(rows)"), js.indexOf("function kv(rows)") + 400);
+            assertFalse(kv.contains("class=\"num\""),
+                    "键值表的值列不能是右对齐的 .num：" + kv);
+            assertFalse(kv.contains("text-align"), "对齐交给 CSS，别在 JS 里塞样式");
+
+            // 样式要真的把键列定宽
+            final String css = get(port, "/app.css").body;
+            assertTrue(css.contains("td.k {"), css);
+            assertTrue(css.contains("td.k") && css.contains("white-space: nowrap"),
+                    "键列不该折行，否则宽度定不住：" + shortTail(css));
+
+            // 但真正的计数表（队列、环形文件）仍应右对齐 —— 那是有意义的
+            assertTrue(css.contains("td.num { text-align: right"),
+                    "数值列仍然要右对齐便于比大小：" + shortTail(css));
+        }
+    }
+
     @Test
     @DisplayName("页面与静态资源同样只读：POST 一律 405")
     void pagesAreReadOnlyToo(@TempDir final File dataDir) throws Exception {

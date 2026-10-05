@@ -72,9 +72,17 @@ var Otl = (function () {
     return typeof v === 'number' ? v.toLocaleString('en-US') : String(v);
   }
 
+  /**
+   * 「键 → 值」两列。键固定宽度、值**左对齐**。
+   *
+   * <p>右对齐的值列看着整齐，实际最难扫：每一行的值起点都不一样，
+   * 眼睛必须逐行重新对焦，而扫两列对照时人本来就是横向读的。
+   * 键列定宽之后，所有值从同一条竖线开始 ——
+   * 眼睛只需竖着走一遍就能把值和键对上。
+   */
   function kv(rows) {
     return rows.map(function (r) {
-      return '<tr><td>' + esc(r[0]) + '</td><td class="num">' + esc(r[1]) + '</td></tr>';
+      return '<tr><td class="k">' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>';
     }).join('');
   }
 
