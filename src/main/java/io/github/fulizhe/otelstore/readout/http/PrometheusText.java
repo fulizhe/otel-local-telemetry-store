@@ -134,10 +134,10 @@ public final class PrometheusText {
         final String labels = baseLabels(row);
         if ("HISTOGRAM".equals(kind)) {
             appendHistogram(sb, name, labels, str(row.get("metricSum")),
-                    longOf(row.get("metricCount")), detailOf(row));
+                    longOf(row.get("metricCount")), MetricDetail.parse(detailOf(row)));
         } else if ("SUMMARY".equals(kind)) {
             appendSummary(sb, name, labels, str(row.get("metricSum")),
-                    longOf(row.get("metricCount")), detailOf(row));
+                    longOf(row.get("metricCount")), MetricDetail.parse(detailOf(row)));
         } else {
             sb.append(name).append(labels).append(' ').append(number(str(row.get("metricValue"))))
                     .append('\n');
@@ -151,19 +151,17 @@ public final class PrometheusText {
      * {@code _bucket} 的 le 标签是<b>累计</b>值 —— 少这一步画出来的直方图是错的。
      */
     private static void appendHistogram(final StringBuilder sb, final String name, final String labels,
-            final String sum, final long count, final String detail) {
-        final List<String> bounds = extract(detail, "bounds");
-        final List<String> counts = extract(detail, "counts");
-        if (bounds == null || counts == null || bounds.size() != counts.size()) {
-            // detail 认不出来就退化成只有 _sum/_count：给不出错误的桶，比给错的好
+            final String sum, final long count, final MetricDetail detail) {
+        if (detail.bounds == null || detail.counts == null) {
+            // 认不出来就退化成只有 _sum/_count：给不出错误的桶，比给错的好
             appendSimple(sb, name + "_sum", labels, sum);
             appendSimple(sb, name + "_count", labels, String.valueOf(count));
             return;
         }
         long cumulative = 0L;
-        for (int i = 0; i < bounds.size(); i++) {
-            cumulative += parseLong(counts.get(i));
-            sb.append(name).append("_bucket").append(withLabel(labels, "le", bounds.get(i)))
+        for (int i = 0; i < detail.bounds.size(); i++) {
+            cumulative += detail.counts.get(i).longValue();
+            sb.append(name).append("_bucket").append(withLabel(labels, "le", format(detail.bounds.get(i))))
                     .append(' ').append(cumulative).append('\n');
         }
         appendSimple(sb, name + "_sum", labels, sum);
@@ -177,14 +175,19 @@ public final class PrometheusText {
      * 摘要是"客户端算好的分位数"，两者的语义不同 —— 混起来会让人以为分位数是可加的。
      */
     private static void appendSummary(final StringBuilder sb, final String name, final String labels,
-            final String sum, final long count, final String detail) {
-        final Map<String, String> quantiles = extractQuantiles(detail);
-        for (final Map.Entry<String, String> q : quantiles.entrySet()) {
-            sb.append(name).append(withLabel(labels, "quantile", q.getKey()))
-                    .append(' ').append(number(q.getValue())).append('\n');
+            final String sum, final long count, final MetricDetail detail) {
+        if (detail.quantiles != null) {
+            for (final Map.Entry<Double, Double> q : detail.quantiles.entrySet()) {
+                sb.append(name).append(withLabel(labels, "quantile", format(q.getKey())))
+                        .append(' ').append(number(format(q.getValue()))).append('\n');
+            }
         }
         appendSimple(sb, name + "_sum", labels, sum);
         appendSimple(sb, name + "_count", labels, String.valueOf(count));
+    }
+
+    private static String format(final Double d) {
+        return d == null ? "" : d.toString();
     }
 
     private static void appendSimple(final StringBuilder sb, final String name, final String labels,
@@ -331,67 +334,18 @@ public final class PrometheusText {
         return d.isEmpty() ? str(row.get("metricName")) : d;
     }
 
-    /** 从 detail 里取 {@code key=[a, b, c]} 形式的列表。 */
-    private static List<String> extract(final String detail, final String key) {
-        final String marker = key + "=";
-        final int i = detail.indexOf(marker);
-        if (i < 0) {
-            return null;
-        }
-        final int open = detail.indexOf('[', i);
-        final int close = open < 0 ? -1 : detail.indexOf(']', open);
-        if (open < 0 || close < 0) {
-            return null;
-        }
-        final String body = detail.substring(open + 1, close).trim();
-        if (body.isEmpty()) {
-            return new ArrayList<String>();
-        }
-        final List<String> out = new ArrayList<String>();
-        for (final String part : body.split(",")) {
-            out.add(part.trim());
-        }
-        return out;
-    }
-
-        /** 从 {@code detail} 里取 {@code quantiles;0.5=1.0;0.9=2.0} 形式。 */
-    private static Map<String, String> extractQuantiles(final String detail) {
-        final Map<String, String> out = new LinkedHashMap<String, String>();
-        // 第一个分号之前是形态标记（quantiles），跳过
-        final int firstSemi = detail.indexOf(';');
-        int i = firstSemi < 0 ? detail.length() : firstSemi + 1;
-        while (i < detail.length()) {
-            final int next = detail.indexOf(';', i);
-            final String pair = detail.substring(i, next < 0 ? detail.length() : next);
-            final int eq = pair.indexOf('=');
-            if (eq > 0) {
-                out.put(pair.substring(0, eq), pair.substring(eq + 1));
-            }
-            i = next < 0 ? detail.length() : next + 1;
-        }
-        return out;
+    private static String detailOf(final Map<String, Object> row) {
+        return str(row.get("detail"));
     }
 
     private static long longOf(final Object o) {
         return o instanceof Number ? ((Number) o).longValue() : 0L;
     }
 
-    private static long parseLong(final String s) {
-        try {
-            return Long.parseLong(s.trim());
-        } catch (final NumberFormatException e) {
-            return 0L;
-        }
-    }
-
     private static void putIfNotEmpty(final Map<String, String> labels, final String key, final String value) {
         if (value != null && !value.isEmpty()) {
             labels.put(key, value);
         }
-    }
-
-    private static String detailOf(final Map<String, Object> row) {
-        return str(row.get("detail"));
     }
 
     private static String str(final Object o) {

@@ -237,6 +237,10 @@ public static HttpReadout start(final LocalStoreConfig config, final ReadoutQuer
                     serveList(exchange, false);
                     return;
                 }
+                if ("/api/metrics".equals(path)) {
+                    serveMetricPoints(exchange);
+                    return;
+                }
                 sendError(exchange, 404, "not_found",
                         "没有这个端点。读口的端点清单是封闭的，见 docs/adr/adr-06-readout-http-surface.md");
             } catch (final RuntimeException e) {
@@ -274,6 +278,44 @@ public static HttpReadout start(final LocalStoreConfig config, final ReadoutQuer
             exchange.getResponseHeaders().set("Cache-Control", "no-store");
             exchange.sendResponseHeaders(200, body.length);
             write(exchange, body);
+        }
+
+        /**
+         * 指标点：{@code ?name=} 指定指标名，缺省按时间倒序给最近若干个点。
+         *
+         * <p>{@code detail} 那一列是<b>结构化</b>返回的（桶边界、各桶计数、分位点），
+         * 而不是原样吐文本：让页面与脚本各自再写一个 detail 解析器，
+         * 就是两套语法 —— 而 {@code MetricDetail} 已经是唯一的实现。
+         * 解析不出来时 {@code flavor} 为 {@code unknown} 且**带上原文**，
+         * 这样页面还能让人判断"是这个形态没覆盖，还是数据坏了"。
+         *
+         * <p>与 {@code /metrics} 的区别：那个只给每个序列的<b>当前值</b>（Prometheus 语义），
+         * 这个给<b>时间序列</b>（人要看趋势）。
+         */
+        private void serveMetricPoints(final HttpExchange exchange) throws IOException {
+            if (!authorized(exchange)) {
+                return;
+            }
+            final Map<String, String> q = queryParams(exchange.getRequestURI().getRawQuery());
+            final String name = q.get("name");
+            final List<Map<String, Object>> rows =
+                    queries.recentMetricPoints(name == null ? "" : name, parseLimit(q.get("limit")));
+            if (rows == null) {
+                if (!queries.isStoreAvailable()) {
+                    sendError(exchange, 503, "no_store",
+                            "存储层不可用，本次只计数不落库。原因是数据目录不可写，详见扩展自己的日志。");
+                } else {
+                    sendError(exchange, 500, "internal", "读 metric_point 失败，详情见扩展自己的日志");
+                }
+                return;
+            }
+            final List<Map<String, Object>> out = new ArrayList<Map<String, Object>>(rows.size());
+            for (final Map<String, Object> row : rows) {
+                final Map<String, Object> copy = new LinkedHashMap<String, Object>(row);
+                copy.put("detail", MetricDetail.parse(str(row.get("detail"))).toMap(str(row.get("detail"))));
+                out.add(copy);
+            }
+            serveJson(exchange, out);
         }
 
         private void serveJson(final HttpExchange exchange, final Object payload) throws IOException {
@@ -347,6 +389,10 @@ public static HttpReadout start(final LocalStoreConfig config, final ReadoutQuer
                 final String message) throws IOException {
             writeJson(exchange, status, errorBody(kind, message));
         }
+    }
+
+    private static String str(final Object o) {
+        return o == null ? "" : o.toString();
     }
 
     /**

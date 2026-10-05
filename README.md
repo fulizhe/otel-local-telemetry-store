@@ -130,8 +130,9 @@ java -javaagent:opentelemetry-javaagent.jar \
 | `/api/summary` | 计数与健康：生效配置 / 三条队列 / 各表行数 / 两个环的写游标与覆盖轮次 |
 | `/api/traces?limit=&traceId=` | span 表头行（**不含载荷**），按 id 倒序；给了 `traceId` 则按开始时间排 |
 | `/api/logs?limit=&traceId=` | 日志表头行，同上 |
+| `/api/metrics?name=&limit=` | 指标点的**时间序列**（给了 `name` 则只看那个指标；不给就是最近若干个）。`detail` 结构化返回：桶边界、各桶计数、分位点 |
 | `/metrics` | Prometheus 文本（每个指标每个属性组合的**当前值**） |
-| `/api/metrics` `/api/self` `/api/self-log` | 随 Phase 5 后续几段落地 |
+| `/api/self` `/api/self-log` | 随 Phase 5 后续两段落地 |
 
 `limit` 默认 20、上限 200（`/metrics` 不限，它按序列给）。
 **没有数据返回 200 + 空数组**，只有参数非法才 4xx —— 「没有数据」与「请求写错了」必须能分开。
@@ -139,6 +140,7 @@ java -javaagent:opentelemetry-javaagent.jar \
 ```bash
 curl.exe http://host:17890/api/summary
 curl.exe "http://host:17890/api/traces?traceId=<32 位十六进制>"
+curl.exe "http://host:17890/api/metrics?name=http.server.duration"
 # 配了鉴权时：
 curl.exe -H "X-Otel-Store-Token: <dataDir>/otelstore.token 里的内容" http://host:17890/api/summary
 ```

@@ -292,6 +292,24 @@ class LocalStoreTest {
         }
     }
 
+    @Test
+    @DisplayName("指标名为空 = 不按名字过滤；给了名字才过滤")
+    void metricPointsNameFilter(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = new LocalStore(config(dataDir), "test-metric-filter")) {
+            store.store(metric("a.one", "east", 100L));
+            store.store(metric("b.two", "west", 200L));
+
+            // 空串/null 表示"都要" —— 曾经被当成"名字等于空串"，于是永远返回空，
+            // 而空结果看起来完全像"还没有指标"，不报错
+            assertEquals(2, store.recentMetricPoints("", 10).size());
+            assertEquals(2, store.recentMetricPoints(null, 10).size());
+            assertEquals(1, store.recentMetricPoints("a.one", 10).size());
+            assertEquals(1, store.recentMetricPoints("b.two", 10).size());
+            assertEquals(0, store.recentMetricPoints("c.three", 10).size());
+            assertEquals(1, store.recentMetricPoints("b.two", 1).size(), "limit 仍然生效");
+        }
+    }
+
     private static Map<String, Object> findByAttrKey(final List<Map<String, Object>> rows, final String key) {
         for (final Map<String, Object> row : rows) {
             if (key.equals(row.get("attrKey"))) {

@@ -527,17 +527,27 @@ public final class LocalStore implements AutoCloseable {
         }
     }
 
-    /** 某个指标名最近的点（新到旧）。 */
+    /**
+     * 某个指标名最近的点（新到旧）。
+     *
+     * <p><b>{@code metricName} 为 null 或空串 = 不按名字过滤</b>，给最近若干个点。
+     * 这一点曾经写错过：把空串当成"名字等于空串"去做等值匹配，结果"看最近的所有指标"
+     * 永远返回空 —— 而空结果看起来完全像"还没有指标"，不报错、也不像故障
+     *（JMX 的 {@code recentMetricPoints("")} 也就跟着一直返回空）。这里显式分清两种意图。
+     */
     public List<Map<String, Object>> recentMetricPoints(final String metricName, final int limit)
             throws SQLException {
-        final PreparedStatement ps;
+        final boolean byName = metricName != null && !metricName.isEmpty();
+        final String sql = "SELECT id, metric_name, data_type, ts, resource_id, scope_name, scope_version,"
+                + " attr_key, unit, metric_value, metric_count, metric_sum, detail"
+                + " FROM metric_point" + (byName ? " WHERE metric_name = ?" : "")
+                + " ORDER BY ts DESC, id DESC FETCH FIRST " + positive(limit) + " ROWS ONLY";
         synchronized (lock) {
-            ps = conn.prepareStatement("SELECT id, metric_name, data_type, ts, resource_id, scope_name,"
-                    + " scope_version, attr_key, unit, metric_value, metric_count, metric_sum, detail"
-                    + " FROM metric_point WHERE metric_name = ? ORDER BY ts DESC, id DESC FETCH FIRST "
-                    + positive(limit) + " ROWS ONLY");
+            final PreparedStatement ps = conn.prepareStatement(sql);
             try {
-                ps.setString(1, metricName == null ? "" : metricName);
+                if (byName) {
+                    ps.setString(1, metricName);
+                }
                 return read(ps, METRIC_COLUMNS);
             } finally {
                 ps.close();

@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.fulizhe.otelstore.core.config.LocalStoreConfig;
 import io.github.fulizhe.otelstore.core.model.KeyValue;
+import io.github.fulizhe.otelstore.core.model.MetricPointEntry;
 import io.github.fulizhe.otelstore.core.model.ResourceDescriptor;
 import io.github.fulizhe.otelstore.core.model.SpanRecord;
 import io.github.fulizhe.otelstore.core.storage.LocalStore;
@@ -189,13 +190,15 @@ class HttpReadoutTest {
         try (LocalStore store = storeWithOneSpan(dataDir);
              HttpReadout readout = start(dataDir, 0, false, null, store)) {
             final int port = readout.getActualPort();
-            // 本段已落地的端点：/、/api/summary、/api/traces、/api/logs、/metrics
-            for (final String path : new String[]{"/", "/api/summary", "/api/traces", "/api/logs", "/metrics"}) {
+            // 本段已落地的端点：/、/api/summary、/api/traces、/api/logs、/api/metrics、/metrics
+            for (final String path : new String[]{"/", "/api/summary", "/api/traces", "/api/logs",
+                    "/api/metrics", "/metrics"}) {
                 assertEquals(200, get(port, path).status, path + " 用 GET 应当可达");
             }
             // 还没实现的必须 404 而不是 200 空壳 —— 否则会以为它通了。
-            // /api/metrics 是下一段的事；/api/payload 则是**永远不提供**的那个（ADR-6 第七节）
-            for (final String path : new String[]{"/api/metrics", "/api/payload/1"}) {
+            // /api/self 与 /api/self-log 是后两段的事；/api/payload 则是**永远不提供**的那个
+            // （ADR-6 第七节）
+            for (final String path : new String[]{"/api/self", "/api/self-log", "/api/payload/1"}) {
                 assertEquals(404, get(port, path).status, path + " 还没实现，必须是 404");
             }
             for (final String method : new String[]{"POST", "PUT", "DELETE", "OPTIONS"}) {
@@ -270,6 +273,103 @@ class HttpReadoutTest {
                 assertTrue(r.body.contains("\"error\":\"bad_request\""), r.body);
             }
         }
+    }
+
+    @Test
+    @DisplayName("/api/metrics：时间序列 + 结构化的 detail，而不是原样吐文本")
+    void metricPointsExposeStructuredDetail(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir)) {
+            store.store(new MetricPointEntry("http.server.duration", "请求耗时", "ms",
+                    MetricPointEntry.MetricKind.HISTOGRAM, 1700000000000L, null, "io.demo", "1.0",
+                    Collections.singletonList(KeyValue.of("route", "/orders")),
+                    Double.NaN, 7L, 12.5d,
+                    "explicit;min=1.0;max=9.0;bounds=[2.0, 5.0];counts=[3, 4]"));
+            store.store(new MetricPointEntry("http.server.duration", "请求耗时", "ms",
+                    MetricPointEntry.MetricKind.HISTOGRAM, 1700000001000L, null, "io.demo", "1.0",
+                    Collections.singletonList(KeyValue.of("route", "/cart")),
+                    Double.NaN, 1L, 1.0d,
+                    "explicit;min=1.0;max=1.0;bounds=[1.0];counts=[1]"));
+            try (HttpReadout readout = start(dataDir, 0, false, null, store)) {
+                final String body = get(readout.getActualPort(), "/api/metrics?name=http.server.duration")
+                        .body;
+                assertTrue(body.contains("\"flavor\":\"explicit\""), body);
+                assertTrue(body.contains("\"bounds\":[2.0,5.0]"), body);
+                assertTrue(body.contains("\"counts\":[3,4]"), body);
+                assertTrue(body.contains("\"metricCount\":7"), body);
+                assertFalse(body.contains("explicit;min="), "不该把 detail 原文当结构吐出去：" + body);
+
+                // 两个属性组合 = 两个点，各带自己的哈希
+                final List<String> hashes = attrKeysOf(body);
+                assertEquals(2, hashes.size(), "两个属性组合应当有两个不同的哈希：" + hashes);
+
+                // 标量的形态标记要保留：整数计数不该被显示成浮点
+                store.store(new MetricPointEntry("orders.processed", null, "1",
+                        MetricPointEntry.MetricKind.SUM, 1700000002000L, null, "io.demo", "1.0",
+                        Collections.emptyList(), 42.0d, 0L, Double.NaN, "long"));
+                final String withScalar = get(readout.getActualPort(),
+                        "/api/metrics?name=orders.processed").body;
+                assertTrue(withScalar.contains("\"flavor\":\"long\""), withScalar);
+                assertTrue(withScalar.contains("\"metricValue\":42"), withScalar);
+            } finally {
+                store.close();
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("/api/metrics 缺 name 时给最近的数据点；没有指标时空数组")
+    void metricPointsWithoutNameGivesRecent(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final int port = readout.getActualPort();
+            assertEquals("[]", get(port, "/api/metrics").body.trim(), "没有指标点时是空数组");
+            assertEquals("[]", get(port, "/api/metrics?name=never.existed").body.trim());
+        }
+    }
+
+    @Test
+    @DisplayName("/api/metrics 受鉴权保护，且 detail 认不出来时带原文")
+    void metricPointsAuthAndUnknownDetail(@TempDir final File dataDir) throws Exception {
+        final String token = "m-token";
+        try (LocalStore store = storeWithOneSpan(dataDir)) {
+            store.store(new MetricPointEntry("weird", null, null, MetricPointEntry.MetricKind.HISTOGRAM,
+                    1700000000000L, null, "io.demo", "1.0", Collections.emptyList(),
+                    Double.NaN, 3L, 1.0d, "某种没覆盖的形态"));
+            assertEquals(1, store.countMetrics(), "这个点必须真的进库了，否则下面测的是空库");
+            try (HttpReadout readout = start(dataDir, 0, true, token, store)) {
+                final int port = readout.getActualPort();
+                assertEquals(401, get(port, "/api/metrics").status);
+                assertEquals(401, get(port, "/api/metrics", "wrong").status);
+
+                // 先确认这个点确实在库里，再谈它的 detail 解析
+                final String all = get(port, "/api/metrics", token).body;
+                assertTrue(all.contains("weird"), "这个指标点应当能被查到：" + all);
+
+                final String body = get(port, "/api/metrics?name=weird", token).body;
+                assertTrue(body.contains("\"flavor\":\"unknown\""), body);
+                assertTrue(body.contains("\"raw\":\"某种没覆盖的形态\""),
+                        "认不出来时必须带原文，否则页面上什么都判断不了：" + body);
+                assertFalse(body.contains("\"bounds\""), "认不出来就不给桶：" + body);
+            } finally {
+                store.close();
+            }
+        }
+    }
+
+    /** 从响应里取出所有出现过的 attr_key 值（去重、保持顺序）。 */
+    private static List<String> attrKeysOf(final String json) {
+        final List<String> out = new ArrayList<String>();
+        final String needle = "\"attrKey\":\"";
+        int i = json.indexOf(needle);
+        while (i >= 0) {
+            final int from = i + needle.length();
+            final String v = json.substring(from, json.indexOf('"', from));
+            if (!out.contains(v)) {
+                out.add(v);
+            }
+            i = json.indexOf(needle, from);
+        }
+        return out;
     }
 
     @Test
