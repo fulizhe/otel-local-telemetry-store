@@ -435,6 +435,11 @@ class HttpReadoutTest {
         }
     }
 
+    /** 只在断言消息里用：页面很长，全打出来没人看得完。 */
+    private static String shortTail(final String text) {
+        return text.length() <= 400 ? text : "…（前 400 字符）" + text.substring(0, 400);
+    }
+
     @Test
     @DisplayName("/metrics 是 Prometheus 文本，不是 JSON")
     void metricsEndpointSpeaksPrometheusText(@TempDir final File dataDir) throws Exception {
@@ -495,8 +500,17 @@ class HttpReadoutTest {
             assertTrue(r.body.contains("X-Otel-Store-Token"),
                     "页面必须知道那个请求头名，否则启用鉴权时它连数据都取不到");
             assertTrue(r.body.contains("sessionStorage"), "token 只能放 sessionStorage");
-            assertFalse(r.body.contains("?token="), "token 绝不能进 URL");
-            assertFalse(r.body.contains("demo-span"), "页面本身不含数据 —— 数据由 JS 带头去取");
+                assertFalse(r.body.contains("?token="), "token 绝不能进 URL");
+                assertFalse(r.body.contains("demo-span"), "页面本身不含数据 —— 数据由 JS 带头去取");
+
+                // 动态生成的行里**不许有内联 onclick**。
+                // 内联 onclick 只能靠字符串拼接把引号套出来（引号地狱），
+                // 而且页面一旦有 CSP（script-src 不含 'unsafe-inline'）就全部点不动。
+                // 事件委托（tbody 一个监听 + data-trace）两种问题都没有。
+                assertTrue(r.body.contains("data-trace="), "trace 链接必须用 data 属性：" + shortTail(r.body));
+                assertTrue(r.body.contains("wireTraceLinks"), "必须有事件委托的接线");
+                assertFalse(r.body.contains("onclick=\"pickTrace("),
+                        "动态行里不该有内联 onclick：" + shortTail(r.body));
         }
     }
 

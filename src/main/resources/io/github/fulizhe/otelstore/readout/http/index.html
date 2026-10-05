@@ -153,7 +153,10 @@
     所以现在看到的是 <code>a3f9c2e1</code> 而不是 <code>region="east"</code>。
     各条线仍然是<b>分开</b>的，只是标签暂时读不懂。
     <br>
-    其余端点（指标点、Prometheus、自监控、自日志、载荷详情）随 Phase 5 逐段落地。
+    其余端点（自监控、自日志、载荷详情）随 Phase 5 逐段落地。
+    <br>
+    <b>行点击</b>：现在还不能点开单条详情 —— 载荷解码那一段还没做（ADR-6 第七节）。
+    这一版能做的联查是点行尾的 <code>trace</code>，它把 span 与日志一起收窄到同一个 trace。
   </div>
 </div>
 
@@ -250,6 +253,7 @@
   }
 
   if (token()) { $('token').value = token(); }
+  wireTraceLinks();
   refresh();
   loadLists();
   loadMetrics();
@@ -291,20 +295,31 @@
       return;
     }
     $('spans-msg').textContent = res.d.length
-      ? '共 ' + res.d.length + ' 条' + ($('trace-id').value.trim() ? '（该 trace，按开始时间排）' : '（最近）')
+      ? '共 ' + res.d.length + ' 条' + ($('trace-id').value.trim() ? '（该 trace，按开始时间排；点「清除」回到最近）' : '（最近）')
       : '没有数据 —— 这不是故障：可能是没数据、已被行数水位淘汰、或该 trace 的采集期已过。';
     $('spans-count').textContent = res.d.length + ' 条';
     $('spans').innerHTML = res.d.map(function (r) {
       return '<tr><td>' + esc(ts(r.startTime)) + '</td>'
         + '<td>' + esc(clip(r.name, 48))
-          + (r.traceId ? ' <a href="#" onclick="pickTrace(\'' + esc(r.traceId) + '\');return false;" '
-              + 'style="color:var(--dim)">trace</a>' : '')
+          + (r.traceId ? traceLink(r.traceId) : '')
           + '</td>'
         + '<td class="num">' + dur(r.startTime, r.endTime) + '</td>'
         + '<td>' + statusText(r.statusCode) + '</td>'
         + '<td>' + esc(clip(r.scopeName, 28)) + '</td>'
         + '<td>' + esc(clip(r.resource, 40)) + '</td></tr>';
     }).join('') || '<tr><td colspan="6" style="color:var(--dim)">–</td></tr>';
+  }
+
+  /**
+   * trace 链接：只放 data 属性，**不内联 onclick**。
+   *
+   * <p>内联 onclick 是靠字符串拼接把引号套出来的，那是引号地狱 —— 少一个转义就整段失效，
+   * 而且将来页面一旦有 CSP（script-src 不含 'unsafe-inline'）就全部点不动。
+   * 事件委托（tbody 上一个监听 + data-trace）两种问题都没有。
+   */
+  function traceLink(id) {
+    return ' <a href="#" data-trace="' + esc(id) + '" title="只看这个 trace 的 span 与日志"'
+      + ' style="color:var(--dim);cursor:pointer">trace</a>';
   }
 
   function renderLogs(res) {
@@ -319,13 +334,30 @@
       return '<tr><td>' + esc(ts(r.timestamp)) + '</td>'
         + '<td>' + esc(clip(r.severityText || severityName(r.severityNumber), 12)) + '</td>'
         + '<td>' + esc(clip(r.bodyPreview, 90)) + '</td>'
-        + '<td>' + (r.traceId ? '<a href="#" onclick="pickTrace(\'' + esc(r.traceId)
-            + '\');return false;" style="color:var(--dim)">' + esc(clip(r.traceId, 12)) + '…</a>' : '')
+        + '<td>' + (r.traceId
+            ? '<a href="#" data-trace="' + esc(r.traceId) + '" title="只看这个 trace"'
+              + ' style="color:var(--dim);cursor:pointer">' + esc(clip(r.traceId, 12)) + '…</a>'
+            : '')
         + '</td></tr>';
     }).join('') || '<tr><td colspan="4" style="color:var(--dim)">–</td></tr>';
   }
 
-  function pickTrace(id) { $('trace-id').value = id; loadLists(); }
+  /** 事件委托：tbody 上一个监听，管所有 data-trace 链接（新增的行也自动生效）。 */
+  function wireTraceLinks() {
+    ['spans', 'logs'].forEach(function (id) {
+      $(id).addEventListener('click', function (ev) {
+        var a = ev.target.closest ? ev.target.closest('a[data-trace]') : null;
+        if (!a) { return; }
+        ev.preventDefault();
+        pickTrace(a.getAttribute('data-trace'));
+      });
+    });
+  }
+
+  function pickTrace(id) {
+    $('trace-id').value = id;
+    loadLists();
+  }
 
   function loadMetrics() {
     var name = $('metric-name').value.trim();
