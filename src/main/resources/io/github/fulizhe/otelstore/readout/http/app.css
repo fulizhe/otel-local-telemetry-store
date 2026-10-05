@@ -74,6 +74,12 @@ code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-si
 .modal-body { padding: 16px 18px 22px; }
 .modal h3 { font-size: 13px; margin: 16px 0 6px; color: var(--fg); }
 
+/* 日志正文：保留换行与缩进，否则栈信息会被压成一行 */
+pre.body { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+           padding: 10px 12px; white-space: pre-wrap; word-break: break-word;
+           font: 12px/1.5 ui-monospace, Consolas, "Courier New", monospace;
+           max-height: 420px; overflow: auto; margin: 0; }
+
 /* 索引页的入口卡片 */
 .links { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
 .links a { display: block; text-decoration: none; color: inherit;

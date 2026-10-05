@@ -260,6 +260,7 @@ var Otl = (function () {
     var payloadHtml;
     if (p.available) {
       payloadHtml = '<div class="foot">载荷 ' + esc(p.bytes) + ' 字节，已解码</div>'
+        + (isSpan ? '' : logBody(p.decoded))
         + attrTable((p.decoded || {}).attributes)
         + (isSpan ? eventTable(p.decoded) + statusLine(p.decoded) : '');
     } else {
@@ -272,6 +273,32 @@ var Otl = (function () {
 
     $('detail-msg').innerHTML = '';
     $('detail-body').innerHTML = head + '<h3>属性</h3>' + payloadHtml;
+  }
+
+  /**
+   * 日志正文。
+   *
+   * <p>正文在 {@code decoded.body} 里，而列表那一列只是它的<b>预览</b>。
+   * 详情弹框原本只渲染 attributes —— 于是日志详情里最该有的东西反倒是空的，
+   * 而"弹框打开了、里面只有属性表"看上去完全像正常。
+   *
+   * <p>正文可能是一整个请求体或一整段栈，所以截断到 4 KB 且<b>标明截了多少</b>
+   * （半截内容看起来像完整的，比明确写着被截断危险得多，ADR-6 第十节）。
+   */
+  function logBody(decoded) {
+    var b = (decoded || {}).body;
+    if (b === null || b === undefined || b === '') {
+      return '<div class="foot">这条日志没有正文（或正文是空的）</div>';
+    }
+    var text = typeof b === 'object' ? JSON.stringify(b) : String(b);
+    var LIMIT = 4096;
+    var shown = text.length > LIMIT ? text.slice(0, LIMIT) : text;
+    var more = text.length > LIMIT
+      ? '<div class="foot">正文共 ' + text.length.toLocaleString('en-US') + ' 字符，'
+        + '这里只显示前 ' + LIMIT.toLocaleString('en-US') + ' 个'
+        + '（载荷本身不提供下载口，这是刻意不给的，见 ADR-6 第七节）</div>'
+      : '';
+    return '<h3>正文</h3><pre class="body">' + esc(shown) + '</pre>' + more;
   }
 
   function attrTable(attrs) {
@@ -490,10 +517,17 @@ var Otl = (function () {
     }).join('') || '<tr><td colspan="7" style="color:var(--dim)">–</td></tr>';
   }
 
+  /** 段名 → 表格 tbody 的 id。**这两者不是同一个词**，别靠"恰好同名"活着。 */
+  var TABLE_OF = { traces: 'spans', logs: 'logs', metrics: 'metrics' };
+
   /** 事件委托：tbody 上一个监听，管 data-trace 链接与 data-detail 行（新增的行也自动生效）。 */
   function wireTable(id) {
     var body = $(id);
-    if (!body) { return; }
+    if (!body) {
+      // 拼错段名要立刻炸。之前这里是静默 return，span 页因此整页点不动，
+      // 而页面上看不出任何异常。
+      throw new Error('找不到表格元素 #' + id + '（段名与 tbody 的 id 对不上）');
+    }
     body.style.cursor = 'pointer';   // 表头行也做成可点的样子 —— 否则"行可点"只能靠猜
     body.addEventListener('click', function (ev) {
       var a = ev.target.closest ? ev.target.closest('a[data-trace]') : null;
@@ -556,7 +590,7 @@ var Otl = (function () {
     });
 
     ['traces', 'logs', 'metrics'].forEach(function (k) {
-      if ((parts || []).indexOf(k) >= 0) { wireTable(k); }
+      if ((parts || []).indexOf(k) >= 0) { wireTable(TABLE_OF[k]); }
     });
 
     // 表单回车即查询，否则"填了不按按钮"是很常见的误操作
