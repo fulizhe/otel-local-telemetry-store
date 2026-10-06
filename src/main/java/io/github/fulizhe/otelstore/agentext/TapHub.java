@@ -9,7 +9,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.logging.Logger;
 
 /**
  * 三条信号管线的持有者。
@@ -26,8 +25,6 @@ import java.util.logging.Logger;
  * {@link #snapshot()} 里 {@code store} 为 null，日志里有一行说明。
  */
 public final class TapHub implements AutoCloseable {
-
-    private static final Logger LOGGER = Logger.getLogger(TapHub.class.getName());
 
     /**
      * 周期汇总的间隔（秒）。
@@ -63,9 +60,9 @@ public final class TapHub implements AutoCloseable {
 
     public TapHub(final LocalStoreConfig config) {
         this.config = config;
-        // 先把扩展自己的日志挂到 <dataDir>/otelstore.log（ADR-6 第九节）。
+        // 先把扩展自己的日志文件定到 <dataDir>/otelstore.log（ADR-6 第九节）。
         // 放在最前面：紧随其后的"存储层就绪"与启动汇总那几行也应当进这一个文件。
-        SelfLog.attach(new File(config.getDataDir()));
+        SelfLog.init(new File(config.getDataDir()));
         final int cap = config.getQueueCapacity();
         this.store = openStore(config);
         this.traces = new RecordQueue<Object>("traces", cap, spanSink(store));
@@ -129,15 +126,16 @@ public final class TapHub implements AutoCloseable {
     private LocalStore openStore(final LocalStoreConfig config) {
         try {
             final LocalStore opened = new LocalStore(config);
-            LOGGER.info("[otel-local-telemetry-store] 存储层就绪 dataDir=" + config.getDataDir()
+            SelfLog.info(TapHub.class.getName(), "[otel-local-telemetry-store] 存储层就绪 dataDir="
+                    + config.getDataDir()
                     + " ringFiles=traces.capped,logs.capped"
                     + " rows=" + config.getRowsTraces() + "/" + config.getRowsLogs() + "/"
                     + config.getRowsMetrics());
             return opened;
         } catch (final Exception e) {
             degradedReason = describe(e);
-            LOGGER.warning("[otel-local-telemetry-store] 存储层开不起来，本次只计数不落盘："
-                    + describe(e) + "（数据目录=" + config.getDataDir() + "）");
+            SelfLog.warn(TapHub.class.getName(), "[otel-local-telemetry-store] 存储层开不起来，"
+                    + "本次只计数不落盘：" + describe(e) + "（数据目录=" + config.getDataDir() + "）");
             return null;
         }
     }
@@ -272,7 +270,7 @@ public final class TapHub implements AutoCloseable {
      */
     public void logSummary(final String when) {
         try {
-            LOGGER.info("[otel-local-telemetry-store] " + when
+            SelfLog.info(TapHub.class.getName(), "[otel-local-telemetry-store] " + when
                     + " dataDir=" + config.getDataDir()
                     + " | traces " + line(traces)
                     + " | logs " + line(logs)
@@ -325,9 +323,9 @@ public final class TapHub implements AutoCloseable {
         if (store != null) {
             store.close();
         }
-        // 摘掉构造时挂上的自有日志 handler。进程内单例，关掉就摘 ——
-        // 测试里每个用例都会建一次 hub，不摘的话 handler 会指着已被删掉的临时目录。
-        SelfLog.detach();
+        // 关掉自有日志写入器。进程内单例，关掉就放 ——
+        // 测试里每个用例都会建一次 hub，不关的话写入器会指着已被删掉的临时目录。
+        SelfLog.close();
     }
 
     /**

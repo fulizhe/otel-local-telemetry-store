@@ -223,16 +223,19 @@ ADR-1 里悬着的"读口跨源取舍"到此关闭。
 
 ### 九、扩展自己的日志：只读自己写的那一个文件
 
-- 给扩展自己的 logger 挂一个 **JDK 日志框架的 `Handler`**（`SelfLog` 里的私有实现，
-  零三方依赖）：当前文件 `<dataDir>/otelstore.log`，轮转备份 `<dataDir>/otelstore.log.1`，
-  **单文件 1 MiB、只留 1 份备份**（合计有界 ≤ 2 MiB）—— 符合本项目"有界"的第一原则。
-- **为什么不用 `java.util.logging.FileHandler`**（2026-10-06 实测，数字见
-  `docs/notes/2026-10-06-self-log-filehandler-probe.md`）：它的 `count` 是**文件总数**、
-  不是"备份份数"。`count=1` 时超限只是把同一个文件**截断**，一份备份都没有
-  （写 200 行、limit 1000，最后只剩最新那条）；`count=2` 时 JDK 会按代次把文件名自动改成
-  `otelstore.log.0` / `.1`，文档写明的 `<dataDir>/otelstore.log` 根本不存在，
-  读端还得去猜哪个是当前文件。自己写一个 `Handler` 子类（约八十行）才同时拿到
-  **固定的文件名**与**确定的轮转**，而它仍属 `java.util.logging`，没有引入任何三方依赖。
+- 扩展自己的日志由 **`SelfLog` 门面**写 `<dataDir>/otelstore.log`：轮转备份
+  `<dataDir>/otelstore.log.1`，**单文件 1 MiB、只留 1 份备份**（合计有界 ≤ 2 MiB）——
+  符合本项目"有界"的第一原则。各处的日志改调 `SelfLog.info/warn`：它**写文件**的同时
+  **照常调 JUL**，所以 stderr / agent 那边的输出一字不变。
+- **为什么不是"给 logger 挂一个 JDK `Handler`"**（2026-10-06 实测，见
+  `docs/notes/2026-10-06-self-log-filehandler-probe.md`）：OTel javaagent 把
+  `java.util.logging.Logger` 换成了 `io.opentelemetry.javaagent.bootstrap.PatchLogger`。
+  在扩展的 ClassLoader 里，`Logger.getLogger(...).addHandler(...)` 是**空操作**
+  （`getHandlers()` 恒为 0）、`setLevel(...)` 也不生效（level 恒为 SEVERE）——
+  **挂着 agent 时挂 Handler 收不到任何记录**（这正是真机首次验收返回"暂无内容"的原因）。
+  改由扩展自己的门面直接写文件，不依赖 JUL 是否被替换；用的仍是 JDK 的
+  `java.util.logging`（`LogRecord` / `Formatter`）与 `java.io`，零三方依赖。
+  同一份 notes 里还记着 `FileHandler` 的 `count` 是"文件总数"而非"备份份数"那件事。
 - `/api/self-log` 读它的**尾部 N 行**（默认 100、上限 500）。
 - **只读这个文件，不读应用的日志、也不猜 stderr 去了哪**：
   stderr 落哪个文件由启动方决定，扩展无从得知；而为了展示自己的状态去读

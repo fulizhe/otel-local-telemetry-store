@@ -4,6 +4,7 @@ import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.github.fulizhe.otelstore.core.config.LocalStoreConfig;
+import io.github.fulizhe.otelstore.core.util.SelfLog;
 import io.github.fulizhe.otelstore.core.util.ThrottledLogger;
 import io.github.fulizhe.otelstore.core.storage.LocalStore;
 import io.github.fulizhe.otelstore.readout.ReadoutQueries;
@@ -45,10 +46,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 那种情况下同一网络内任何机器都能读走全部载荷。
  */
 public final class HttpReadout implements AutoCloseable {
-
-    private static final java.util.logging.Logger LOGGER =
-            java.util.logging.Logger.getLogger(HttpReadout.class.getName());
-
 
     private static final Charset UTF8 = Charset.forName("UTF-8");
 
@@ -104,7 +101,8 @@ public static HttpReadout start(final LocalStoreConfig config, final ReadoutQuer
         server.start();
 
         ReadoutAccess.writePort(dataDir, actualPort);
-        LOGGER.info("[otel-local-telemetry-store] 读口就绪 host=" + config.getHost()
+        SelfLog.info(HttpReadout.class.getName(),
+                "[otel-local-telemetry-store] 读口就绪 host=" + config.getHost()
                 + " port=" + actualPort + "（配置值 " + config.getPort() + "）"
                 + " auth=" + (authEnabled ? "on" : "off")
                 + " 端点清单见 docs/adr/adr-06-readout-http-surface.md");

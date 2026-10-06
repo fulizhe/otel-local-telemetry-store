@@ -2,8 +2,6 @@ package io.github.fulizhe.otelstore.core.util;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 
 /**
  * 限速日志：同一个 key 的前 {@value #HEAD_COUNT} 条照打，之后每 {@value #TAIL_EVERY} 条打一条。
@@ -16,8 +14,6 @@ import java.util.logging.Logger;
  * 读口快照里看到总数，所以没有信息真的丢失。
  */
 public final class ThrottledLogger {
-
-    private static final Logger LOGGER = Logger.getLogger(ThrottledLogger.class.getName());
 
     private static final int HEAD_COUNT = 3;
     private static final int TAIL_EVERY = 1000;
@@ -54,10 +50,11 @@ public final class ThrottledLogger {
         if (shouldLog(nth)) {
             final String text = "[otel-local-telemetry-store] " + message
                     + "（" + key + " 第 " + nth + " 次）";
+            // 走 SelfLog 门面：既写自有日志文件，又照常走 JUL（stderr）。见 SelfLog 类注释。
             if (cause == null) {
-                LOGGER.log(Level.WARNING, text);
+                SelfLog.warn(ThrottledLogger.class.getName(), text);
             } else {
-                LOGGER.log(Level.WARNING, text, cause);
+                SelfLog.warn(ThrottledLogger.class.getName(), text, cause);
             }
         }
     }

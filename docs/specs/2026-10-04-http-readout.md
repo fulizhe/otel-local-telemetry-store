@@ -226,10 +226,12 @@
 
 **八、扩展自己的日志**
 
-- 给扩展自己的 logger 挂一个 **JDK 日志框架的 `Handler`**（`SelfLog` 里的私有实现）：
-  当前文件 `<dataDir>/otelstore.log`、备份 `<dataDir>/otelstore.log.1`，
-  **单文件 1 MiB、只留 1 份备份** —— 符合本项目"有界"的第一原则。
-  （不用 `FileHandler` 的实测理由见 [ADR-6 第九节](../adr/adr-06-readout-http-surface.md)）
+- 扩展自己的日志由 **`SelfLog` 门面**写 `<dataDir>/otelstore.log`、备份
+  `<dataDir>/otelstore.log.1`，**单文件 1 MiB、只留 1 份备份** —— 符合本项目"有界"的第一原则。
+  各处日志改调 `SelfLog.info/warn`（写文件 + 照常走 JUL）。**不是给 logger 挂 Handler**：
+  实测 agent 把 `java.util.logging.Logger` 换成了 `PatchLogger`，`addHandler` / `setLevel`
+  都是空操作，挂 Handler 收不到记录（理由见
+  [ADR-6 第九节](../adr/adr-06-readout-http-surface.md)）
 - `/api/self-log` 读它的**尾部 N 行**（默认 100、上限 500）。
 - **只读这个文件，不读应用的日志、也不猜 stderr 去了哪**：
   stderr 落哪个文件由启动方决定，扩展无从得知；为了展示自己的状态去读别人的日志文件

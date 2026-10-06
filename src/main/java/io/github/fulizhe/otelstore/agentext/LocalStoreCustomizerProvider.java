@@ -13,7 +13,6 @@ import io.opentelemetry.sdk.metrics.export.PeriodicMetricReader;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
-import java.util.logging.Logger;
 
 /**
  * agent 扩展入口。
@@ -28,8 +27,6 @@ import java.util.logging.Logger;
  * @see docs/adr/adr-01-scope-and-principles.md
  */
 public final class LocalStoreCustomizerProvider implements AutoConfigurationCustomizerProvider {
-
-    private static final Logger LOGGER = Logger.getLogger(LocalStoreCustomizerProvider.class.getName());
 
     /** 指标采集周期。OTel 默认 60s，对"本地自查"场景太钝；10s 是折中。 */
     static final long METRIC_INTERVAL_MS = 10_000L;
@@ -86,7 +83,8 @@ public final class LocalStoreCustomizerProvider implements AutoConfigurationCust
             });
         } catch (final RuntimeException e) {
             // 扩展自身的异常绝不能让应用起不来：注册失败只等于"本扩展本次不生效"，应用照常。
-            LOGGER.warning("[otel-local-telemetry-store] 扩展注册失败，本扩展本次不生效：" + e);
+            SelfLog.warn(LocalStoreCustomizerProvider.class.getName(),
+                    "[otel-local-telemetry-store] 扩展注册失败，本扩展本次不生效：" + e);
         }
     }
 
@@ -147,7 +145,8 @@ public final class LocalStoreCustomizerProvider implements AutoConfigurationCust
         final boolean jmx = JmxReadout.register(config, created.store(), queries);
         // HTTP 读口：默认开启（ADR-6 第一节）。起不来只降级读口，不影响应用与存储。
         final boolean http = startHttpReadout(config, queries);
-        LOGGER.info("[otel-local-telemetry-store] 已注册三条采集管线"
+        SelfLog.info(LocalStoreCustomizerProvider.class.getName(),
+                "[otel-local-telemetry-store] 已注册三条采集管线"
                 + " dataDir=" + config.getDataDir()
                 + " selfLogFile=" + SelfLog.FILE_NAME
                 + " queueCapacity=" + config.getQueueCapacity()
@@ -181,7 +180,8 @@ public final class LocalStoreCustomizerProvider implements AutoConfigurationCust
         } catch (final Exception e) {
             // 读口起不来最常见的原因是端口被占且退让也失败、或数据目录不可写。
             // 日志里必须有"实际端口"，否则用户找不到它。
-            LOGGER.warning("[otel-local-telemetry-store] HTTP 读口起不来，本次只有 JMX 那条读口（数据照存）：" + e);
+            SelfLog.warn(LocalStoreCustomizerProvider.class.getName(),
+                    "[otel-local-telemetry-store] HTTP 读口起不来，本次只有 JMX 那条读口（数据照存）：" + e);
             return false;
         }
     }
