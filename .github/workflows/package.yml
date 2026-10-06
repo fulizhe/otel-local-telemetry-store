@@ -1,38 +1,20 @@
 name: Package extension
 
-# 打包扩展 jar。一个 build 承担两种角色:
-#   - 干跑(push / PR):jar 存成 workflow artifact 供下载自测,不发布任何东西
-#   - 发布(tag / release / 手动):jar 挂到该 tag 的 GitHub Release
+# 打包扩展 jar 并挂到该 tag 的 GitHub Release。**只在打 tag / 发 Release 时跑** ——
+# 普通分支 push 与 PR 不打包(那两条路归 build.yml / verify.yml,它们只干跑、不发布)。
 #
-# 发布只挂在人类显式打 tag / 发 Release 上 —— 往 Release 挂资产不可撤销,
-# 无法从"推了 main"区分一次提交和一次发版。
+# 往 Release 挂资产不可撤销,所以发布只挂在人类显式打 tag / 发 Release 上,
+# 不从"推了 main"自动发版。
 #
 # 发布面同时挂 push:tags 与 release:published,因为这两个事件在 GitHub 上不对称:
 #   - git push 一个 tag        → 有 push 事件,**没有** release 事件
 #   - UI 上建 tag / 建 Release → 有 release 事件,**没有** push 事件
 # 两个都挂 + attach 里按 tag 名幂等上传,才能"怎么发都跑"。
-#
-# paths 白名单对 tag push 不生效(GitHub:"Path filters are not evaluated for
-# pushes of tags"),所以同一个 push 上写 paths 与 tags 互不干扰。
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - 'src/**'
-      - 'pom.xml'
-      # 带自身路径:否则改这个 workflow 永远不触发它自己
-      - '.github/workflows/package.yml'
     tags:
       - '*'
-  pull_request:
-    branches:
-      - main
-    paths:
-      - 'src/**'
-      - 'pom.xml'
-      - '.github/workflows/package.yml'
   release:
     types: [published]
   workflow_dispatch:
@@ -102,7 +84,8 @@ jobs:
   attach:
     name: attach jar to release
     needs: build
-    # 只在发布场景跑。PR / push to main 时,build 产出的 artifact 就是全部产物。
+    # 三种触发面(tag / release / 手动)都属发布场景,这里恒真;
+    # 留着当安全网,防以后误加非发布的触发面时把未完成品挂上去。
     if: ${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-24.04
     permissions:
