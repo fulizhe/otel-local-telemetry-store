@@ -971,8 +971,8 @@ var Otl = (function () {
   /**
    * @param page 段名，只用于报错时说清是哪个页面。
    * @param parts 要跑的部分，见 {@link LOADERS} 的键。
-   * @param refreshMs 自动刷新间隔（毫秒）。不给就用默认的 {@link REFRESH_MS}。
-   *        自日志页另给小值：它是要盯着看的，而配置/队列几十秒看一次就够。
+   * @param refreshMs 自动刷新间隔（毫秒）。不给就用默认的 {@link REFRESH_MS}；
+   *        给 0 表示**不自动刷新**（页面自己放一个"刷新"按钮）。
    */
   function start(page, parts, refreshMs) {
     injectShell();
@@ -1005,7 +1005,9 @@ var Otl = (function () {
     if (has('metric-name') && param('name')) { $('metric-name').value = param('name'); }
 
     runReload();
-    setInterval(runReload, (typeof refreshMs === 'number' && refreshMs > 0) ? refreshMs : REFRESH_MS);
+    // refreshMs=0 明确表示"不自动刷新"（页面给了手动按钮）；不给才回落到默认间隔
+    var intervalMs = (typeof refreshMs === 'number') ? refreshMs : REFRESH_MS;
+    if (intervalMs > 0) { setInterval(runReload, intervalMs); }
   }
 
   function runReload() {
