@@ -1,0 +1,153 @@
+name: Package extension
+
+# 打包扩展 jar。一个 build 承担两种角色:
+#   - 干跑(push / PR):jar 存成 workflow artifact 供下载自测,不发布任何东西
+#   - 发布(tag / release / 手动):jar 挂到该 tag 的 GitHub Release
+#
+# 发布只挂在人类显式打 tag / 发 Release 上 —— 往 Release 挂资产不可撤销,
+# 无法从"推了 main"区分一次提交和一次发版。
+#
+# 发布面同时挂 push:tags 与 release:published,因为这两个事件在 GitHub 上不对称:
+#   - git push 一个 tag        → 有 push 事件,**没有** release 事件
+#   - UI 上建 tag / 建 Release → 有 release 事件,**没有** push 事件
+# 两个都挂 + attach 里按 tag 名幂等上传,才能"怎么发都跑"。
+#
+# paths 白名单对 tag push 不生效(GitHub:"Path filters are not evaluated for
+# pushes of tags"),所以同一个 push 上写 paths 与 tags 互不干扰。
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      # 带自身路径:否则改这个 workflow 永远不触发它自己
+      - '.github/workflows/package.yml'
+    tags:
+      - '*'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - '.github/workflows/package.yml'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag;留空 = 用本次 run 的 ref'
+        required: false
+        type: string
+
+run-name: package ${{ inputs.tag || (github.event_name == 'release' && github.event.release.tag_name) || github.ref_name }}
+
+env:
+  # 三种触发面的 tag 取值:手动输入 > release 事件的 tag_name > 当前 ref。
+  TAG: ${{ inputs.tag || (github.event_name == 'release' && github.event.release.tag_name) || github.ref_name }}
+
+permissions: {}   # 默认全关,每个 job 单独声明最小权限
+
+jobs:
+  build:
+    name: build jar
+    # 钉住 24.04:同 build.yml(ubuntu-latest 2026-10-19 迁 Ubuntu 26)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # 发布场景按 tag 构建(手动跑时选中的是分支,要发的却是 tag 上的代码);
+          # PR 场景 ref_name 形如 "123/merge",不是合法 ref,退回默认 ref。
+          ref: ${{ inputs.tag || startsWith(github.ref, 'refs/tags/') && env.TAG || github.ref }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # package 会跑单元测试 —— 发布路径自带一道测试门禁,
+      # 不必去 dependsOn build.yml 的结果(跨 workflow 没法 needs)。
+      - name: Build extension jar (release 8 bytecode)
+        run: mvn -B package
+
+      # 只从根 target 取,maxdepth 1。两个排除项都是实测踩到的:
+      #   original-*.jar —— shade 把打包前那份改名成 original-<finalName>.jar 留在 target 里,
+      #     它是**没做 relocation**的那份,挂上去等于给用户发一个跑不起来的 jar。
+      #   *-shaded.jar   —— 某些 shade 配置会额外留一份;clean runner 上不会出现,防御性排除。
+      - name: Collect jar
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find target -maxdepth 1 -name '*.jar' \
+            ! -name 'original-*.jar' ! -name '*-sources.jar' ! -name '*-shaded.jar' \
+            -exec cp {} dist/ \;
+          ls -l dist/
+          # 收集不到就是构建没产出。让这一步红,而不是挂一个空 Release。
+          test -n "$(ls -A dist)" || { echo "::error::dist 为空,检查构建产物"; exit 1; }
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v7
+        with:
+          name: extension-jar
+          path: dist/*.jar
+          if-no-files-found: error
+
+  attach:
+    name: attach jar to release
+    needs: build
+    # 只在发布场景跑。PR / push to main 时,build 产出的 artifact 就是全部产物。
+    if: ${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # 建/改 Release 与上传资产
+    steps:
+      # 用 API 校验 tag 真的存在:手动跑时若没填 tag 而选的是分支,
+      # gh 会拿分支名当 release 名,结果是一个挂在分支上的假 release。
+      # GH_REPO 不能省:这个 job 故意不 checkout,workspace 里不是 git 仓库 ——
+      # gh 靠 --repo / GH_REPO / git remote 推断目标仓库,前两个都没有时会直接失败。
+      - name: Validate tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::tag '$TAG' 不存在。本 workflow 按 tag 发布;手动跑请填一个已存在的 tag 名。"
+            exit 1
+          fi
+          echo "发布目标 tag: $TAG"
+
+      - name: Download jar
+        uses: actions/download-artifact@v8
+        with:
+          name: extension-jar
+          path: dist
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum ./*.jar > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # tag push 时 Release 还不存在 -> create;UI 上已经发过 Release -> upload。
+      # --clobber 让重跑幂等(同名资产覆盖),不会因为"上次跑过一半"卡住。
+      - name: Attach to release (create if missing)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.jar dist/SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" dist/*.jar dist/SHA256SUMS.txt \
+              --title "$TAG" --generate-notes
+          fi

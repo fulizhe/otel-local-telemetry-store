@@ -1,0 +1,118 @@
+name: Verify packaged artifact
+
+# 产物核验。build.yml 核的是编译产物(target/classes)的字节码;这一步核**shade 之后的交付物**:
+#   - relocation 是否真的生效(顶层不能再有 com/google/protobuf、io/opentelemetry/proto)
+#   - shade 进去的三方依赖(H2 / protobuf-java / opentelemetry-proto)的 class 是不是也落在字节码 8
+#
+# 为什么单列:ADR-5 明确要求"CI 必须连带核依赖",而 shade 不重编译依赖 ——
+# 升级 H2 / protobuf 时,自己代码的字节码断言(52)照样绿,混进去的依赖可能已经 55。
+# 现有 CI 没人核过这一层,所以这里不重跑测试、不重跑页面语法检查(那些归 build.yml)。
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      # 带自身路径:否则改这个 workflow 永远不触发它自己
+      - '.github/workflows/verify.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - '.github/workflows/verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-artifact:
+    name: verify shaded jar
+    # 钉住 24.04:同 build.yml(ubuntu-latest 2026-10-19 迁 Ubuntu 26)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # 交付物就是 shade 后的主 jar。测试归 build.yml,这里 -DskipTests 只求产物。
+      - name: Package (shaded extension jar)
+        run: mvn -B -DskipTests package
+
+      # 取主 jar(排除 shade 留下的 original-*;clean runner 上不会有 -shaded)。
+      - name: Locate the shaded jar
+        id: jar
+        run: |
+          set -euo pipefail
+          jar=$(find target -maxdepth 1 -name 'otel-local-telemetry-store-*.jar' \
+                ! -name 'original-*' ! -name '*-shaded.jar' -print -quit)
+          if [ -z "$jar" ]; then
+            echo "::error::找不到 shade 后的主 jar"; exit 1
+          fi
+          echo "jar=$jar" >> "$GITHUB_OUTPUT"
+          ls -l "$jar"
+
+      - name: Assert relocation happened
+        env:
+          JAR: ${{ steps.jar.outputs.jar }}
+        run: |
+          set -euo pipefail
+          # 只列一次条目到文件再核 —— 不要 `jar tf | grep -q`:grep -q 命中即退,
+          # 上游 jar 收到 SIGPIPE 退非 0,叠加 pipefail 会把"命中"翻成失败。
+          # (tr -d '\r' 是给 Git-Bash/WSL 下手跑同样步骤用的,Linux 上是空操作。)
+          entries="$RUNNER_TEMP/jar-entries.txt"
+          jar tf "$JAR" | tr -d '\r' > "$entries"
+
+          # 这两个根必须被搬进 …otelstore.shaded…(ADR-5),顶层不该再出现
+          for p in 'com/google/protobuf/' 'io/opentelemetry/proto/'; do
+            if grep -q "^$p" "$entries"; then
+              echo "::error::$p 未被 relocation,agent 会父优先加载到它自带的同名类"; exit 1
+            fi
+          done
+          # 搬走的目标根必须真实存在
+          for p in 'io/github/fulizhe/otelstore/shaded/com/google/protobuf/' \
+                   'io/github/fulizhe/otelstore/shaded/io/opentelemetry/proto/'; do
+            grep -q "^$p" "$entries" || { echo "::error::shaded 根缺失:$p"; exit 1; }
+          done
+          # H2 刻意**不**重定位(ADR-5),必须留在顶层
+          grep -q '^org/h2/' "$entries" || { echo "::error::H2 不在 jar 里"; exit 1; }
+          echo "relocation OK"
+
+      - name: Assert third-party bytecode is 8 (major 52)
+        env:
+          JAR: ${{ steps.jar.outputs.jar }}
+        run: |
+          set -euo pipefail
+          entries="$RUNNER_TEMP/jar-entries.txt"
+          jar tf "$JAR" | tr -d '\r' > "$entries"
+          # 每个三方依赖各抽一个顶层类 javap。必须排除 META-INF/versions/(multi-release)——
+          # H2 带了 versions/9、versions/10 的高版本 class,抽到就会误判。
+          # 用 awk 读文件选第一个匹配(不用 `grep | head`,理由同 relocation 步骤的 SIGPIPE)。
+          check() {
+            label="$1"; pattern="$2"
+            entry=$(awk -v re="$pattern" \
+                    '$0 ~ re && $0 !~ /^META-INF[/]/ && $0 ~ /[.]class$/ {print; exit}' "$entries")
+            if [ -z "$entry" ]; then
+              echo "::error::$label:在 jar 里找不到匹配 $pattern 的类"; return 1
+            fi
+            cls="${entry%.class}"; cls="${cls//\//.}"
+            got=$(javap -verbose -cp "$JAR" "$cls" \
+                  | awk '/major version/ {print $3}' | tr -d '\r')
+            echo "$label: $cls -> major $got"
+            if [ "$got" != "52" ]; then
+              echo "::error::$label 期望字节码 8(major 52),实际 $got —— shade 不重编译依赖,升版本时自己核"; return 1
+            fi
+          }
+          check 'protobuf-java'       '^io/github/fulizhe/otelstore/shaded/com/google/protobuf/[^/]+[.]class$'
+          check 'opentelemetry-proto' '^io/github/fulizhe/otelstore/shaded/io/opentelemetry/proto/[^/]+/[^/]+/[^/]+[.]class$'
+          check 'H2'                  '^org/h2/[^/]+/[^/]+[.]class$'
