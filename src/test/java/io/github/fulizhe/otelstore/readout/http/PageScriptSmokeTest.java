@@ -249,7 +249,11 @@ final Exec r = exec(node, script.toString());
             + "var asked = [];\n"
             + "var SUMMARY = { store: { spanRows: 11, logRows: 12, metricRows: 13,\n"
             + "    resources: { interned: 14 },\n"
+            // 最早有效数据时间：traces 有值、logs 为 null —— 两条分支都要渲染得出
+            + "    oldestLiveTimes: { traces: 1700000000000000000, logs: null },\n"
             + "    traceRing: { signal: 'traces', file: 't.capped', currIndex: 1, wrapCount: 0,\n"
+            + "      oldestLiveIndex: 0, rejectedTooLarge: 0, expiredReads: 0 },\n"
+            + "    logRing: { signal: 'logs', file: 'l.capped', currIndex: 0, wrapCount: 0,\n"
             + "      oldestLiveIndex: 0, rejectedTooLarge: 0, expiredReads: 0 } },\n"
             + "  queues: { traces: { offered: 1, drained: 1, dropped: 0, sinkErrors: 0, backlog: 0 } },\n"
             + "  config: { 'otel.localstore.port': 17890 } };\n"

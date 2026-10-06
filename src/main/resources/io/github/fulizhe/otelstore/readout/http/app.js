@@ -653,13 +653,27 @@ var Otl = (function () {
 
   function ringRows(store) {
     var rings = [];
+    var oldest = (store || {}).oldestLiveTimes || {};
     ['traceRing', 'logRing'].forEach(function (k) {
       var r = (store || {})[k];
       if (!r) { return; }
-      rings.push([r.signal + '（' + r.file + '）', r.currIndex, r.wrapCount,
+      // 第 2 列是"最早有效数据时间"（来自 store.oldestLiveTimes，按 signal 取）——
+      // 环文件本身没有时间，这个数只能从 H2 的表头行来（ADR-6 第八节）。
+      rings.push([r.signal + '（' + r.file + '）', oldest[r.signal], r.currIndex, r.wrapCount,
                   r.oldestLiveIndex, r.rejectedTooLarge, r.expiredReads]);
     });
     return rings;
+  }
+
+  /**
+   * 环形文件「最早有效数据」的时间显示。null / 0 → –（= 没有可读记录，
+   * 可能是没存过、也可能是老载荷已被覆盖）。用完整日期时间而不是只给时分 ——
+   * 保留窗口可能跨天。
+   */
+  function oldestTime(nanos) {
+    if (nanos === null || nanos === undefined || !(nanos > 0)) { return '–'; }
+    var d = new Date(Math.round(nanos / 1000000));
+    return isNaN(d.getTime()) ? '–' : d.toLocaleString();
   }
 
   function rowCounts(store) {
@@ -1330,11 +1344,13 @@ var Otl = (function () {
     if (has('rings')) {
       $('rings').innerHTML = ctx.rings.length
         ? ctx.rings.map(function (r) {
-            return '<tr><td>' + esc(r[0]) + '</td><td class="num">' + num(r[1]) + '</td>'
-              + '<td class="num">' + num(r[2]) + '</td><td class="num">' + num(r[3]) + '</td>'
-              + '<td class="num">' + num(r[4]) + '</td><td class="num">' + num(r[5]) + '</td></tr>';
+            return '<tr><td>' + esc(r[0]) + '</td>'
+              + '<td class="num">' + esc(oldestTime(r[1])) + '</td>'
+              + '<td class="num">' + num(r[2]) + '</td>'
+              + '<td class="num">' + num(r[3]) + '</td><td class="num">' + num(r[4]) + '</td>'
+              + '<td class="num">' + num(r[5]) + '</td><td class="num">' + num(r[6]) + '</td></tr>';
           }).join('')
-        : '<tr><td colspan="6" style="color:var(--dim)">–</td></tr>';
+        : '<tr><td colspan="7" style="color:var(--dim)">–</td></tr>';
     }
     if (has('config')) {
       $('config').innerHTML = kv(Object.keys(ctx.d.config || {}).map(function (k) {

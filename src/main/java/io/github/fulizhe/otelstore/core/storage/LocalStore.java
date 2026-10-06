@@ -846,6 +846,7 @@ public final class LocalStore implements AutoCloseable {
         m.put("evicted", evicted());
         m.put("storeErrors", Long.valueOf(storeErrors));
         m.put("resources", resources.snapshot());
+        m.put("oldestLiveTimes", oldestLiveTimes());
         m.put("traceRing", traceRing.snapshot());
         m.put("logRing", logRing.snapshot());
         return m;
@@ -865,6 +866,62 @@ public final class LocalStore implements AutoCloseable {
         m.put("logs", Long.valueOf(evictedLogRows));
         m.put("metrics", Long.valueOf(evictedMetricRows));
         return m;
+    }
+
+    /**
+     * 两条有环形文件的信号各自的「最早有效数据时间」（ADR-6 第八节）：
+     * {@code traces} / {@code logs} → epoch nanos；没有可读记录时为 {@code null}。
+     *
+     * <p><b>为什么从 H2 取而不是读环文件</b>：环文件是字节级的，块里只有
+     * {@code <len><gzip(payload)>}，**没有任何时间戳**，无法反推出"最早那条是什么时候的"。
+     * 而表头行按 ADR-2 记着 {@code start_time} / {@code timestamp}，是唯一的时间来源。
+     *
+     * <p><b>口径不是"表里最老一行的开始时间"</b>，而是"**载荷仍在环的可读窗口内**的最早一条"：
+     * 环按字节封顶、行按行数封顶，两者互不相干 —— 表里可能有比环还能读到的载荷更老的行。
+     * 取老行的时间会撒谎（用户点进去只会看到"已过期"）。所以过滤条件是
+     * {@code payload_id >= 最老存活块 id}（{@link PayloadRing#oldestLiveIndex()}）。
+     *
+     * <p>它回答的是"数据是过期了，还是根本没存"：有行、但最早有效时间很近甚至为 null
+     * 说明环一直在覆盖；没有这个数说明没存过。metrics 不走环，不在本表里。
+     */
+    public Map<String, Object> oldestLiveTimes() {
+        final Map<String, Object> m = new LinkedHashMap<String, Object>();
+        m.put("traces", oldestLiveTime("span", "start_time", traceRing.oldestLiveIndex()));
+        m.put("logs", oldestLiveTime("log_record", "timestamp", logRing.oldestLiveIndex()));
+        return m;
+    }
+
+    /**
+     * 某张表里"载荷仍在环可读窗口内"的最早时间。
+     *
+     * <p>读失败返回 {@code null}（并记一条限速日志）—— 这只是个诊断数字，
+     * 不该让整份快照失败、把页面变成一片空白。
+     */
+    private Long oldestLiveTime(final String table, final String timeColumn, final long oldestLiveBlockId) {
+        synchronized (lock) {
+            try {
+                final PreparedStatement ps = conn.prepareStatement("SELECT MIN(" + timeColumn + ") FROM "
+                        + table + " WHERE payload_id IS NOT NULL AND payload_id >= ?");
+                try {
+                    ps.setLong(1, oldestLiveBlockId);
+                    final ResultSet rs = ps.executeQuery();
+                    try {
+                        if (!rs.next()) {
+                            return null;
+                        }
+                        final long v = rs.getLong(1);
+                        return rs.wasNull() ? null : Long.valueOf(v);
+                    } finally {
+                        rs.close();
+                    }
+                } finally {
+                    ps.close();
+                }
+            } catch (final SQLException e) {
+                ThrottledLogger.warn("store-oldest-live-time", "读 " + table + " 最早有效时间失败", e);
+                return null;
+            }
+        }
     }
 
     /** 数据目录（运维要的就是这个路径，环形文件在里面）。 */

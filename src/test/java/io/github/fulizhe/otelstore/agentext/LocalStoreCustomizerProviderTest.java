@@ -37,12 +37,17 @@ class LocalStoreCustomizerProviderTest {
             for (final Map.Entry<?, ?> e : ((Map<?, ?>) value).entrySet()) {
                 assertFlat(e.getValue(), path + "." + e.getKey());
             }
-        } else {
-            // Double 也在内：环形文件的统计里有压缩率与平均耗时（Phase 4a 时快照里还没有它们）
-            assertTrue(value instanceof String || value instanceof Long || value instanceof Integer
-                            || value instanceof Double || value instanceof Boolean,
-                    path + " 应是 JDK 原生类型，实际 " + value.getClass().getName());
+            return;
         }
+        // null 是合法的 JDK 值：读口用它表示"读不到 / 没有可读记录"，
+        // 而且 ADR-6 要求这种"没有"必须是 null 而不是缺键（缺键分不清"这版没有"与"现在没有"）。
+        if (value == null) {
+            return;
+        }
+        // Double 也在内：环形文件的统计里有压缩率与平均耗时（Phase 4a 时快照里还没有它们）
+        assertTrue(value instanceof String || value instanceof Long || value instanceof Integer
+                        || value instanceof Double || value instanceof Boolean,
+                path + " 应是 JDK 原生类型，实际 " + value.getClass().getName());
     }
 
     private static void collectPaths(final Object value, final String prefix, final List<String> out) {

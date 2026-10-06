@@ -69,12 +69,18 @@
       <tbody id="queues"><tr><td colspan="8" style="color:var(--dim)">–</td></tr></tbody>
     </table>
     <table style="margin-top:16px">
-      <thead><tr><th>环形文件</th><th class="num">写游标</th><th class="num">覆盖轮次</th>
-        <th class="num">最老存活 id</th><th class="num">超限拒写</th><th class="num">过期读</th></tr></thead>
-      <tbody id="rings"><tr><td colspan="6" style="color:var(--dim)">–</td></tr></tbody>
+      <thead><tr><th>环形文件</th><th class="num">最早有效数据</th><th class="num">写游标</th>
+        <th class="num">覆盖轮次</th><th class="num">最老存活 id</th><th class="num">超限拒写</th>
+        <th class="num">过期读</th></tr></thead>
+      <tbody id="rings"><tr><td colspan="7" style="color:var(--dim)">–</td></tr></tbody>
     </table>
     <div id="tiles-note" class="foot"></div>
     <div class="foot">
+      <b>最早有效数据</b>是这条文件<b>现在还读得到</b>的最早一条的时间（取自 H2 表头行，
+      环文件本身只有字节、不带时间戳）。用它可以一眼分清：<b>「数据过期了」</b>
+      （有行，但这个时间很近、甚至显示 –）与<b>「根本没存」</b>（没有数据）；
+      也顺手告诉你当前配置<b>实际留了多久</b>。
+      <br>
       <b>dropped 与 expired 是两件事，别混</b>：环形文件写满是<b>预期行为</b>不是故障
       （容量到顶就覆盖），所以「过期读」增长不代表出错。
       <code>rejectedTooLarge</code> 才是需要看的 —— 它说明有载荷超过了

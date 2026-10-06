@@ -238,6 +238,60 @@ class LocalStoreTest {
     }
 
     @Test
+    @DisplayName("最早有效数据时间：取载荷仍在环窗口内的最早一条，被覆盖的旧行不算（ADR-6 第八节）")
+    void oldestLiveTimeFollowsRingWindow(@TempDir final File dataDir) throws Exception {
+        final Map<String, String> p = new LinkedHashMap<String, String>();
+        p.put(LocalStoreConfig.PREFIX + "dataDir", dataDir.getAbsolutePath());
+        p.put(LocalStoreConfig.PREFIX + "capped.traces.bytes", "4096");
+        p.put(LocalStoreConfig.PREFIX + "max.payload.bytes", "2048");
+        // 不可压缩的载荷，保证小环必然绕圈
+        final java.util.Random rnd = new java.util.Random(20261006L);
+
+        try (LocalStore store = new LocalStore(LocalStoreConfig.from(p), "test-oldest")) {
+            // 空库：没有可读记录 → null（不是 0，0 会被读成 1970）
+            assertNull(oldestTraces(store), "空库没有可读记录，必须是 null");
+
+            final long base = 1700000000000000000L;
+            for (int i = 0; i < 100; i++) {
+                final byte[] chunk = new byte[1024];
+                rnd.nextBytes(chunk);
+                store.store(new SpanRecord("trace-" + i, "span-" + i, "", "s" + i, 2,
+                        base + i * 1_000_000_000L, base + i * 1_000_000_000L + 500L, 0, null,
+                        "scope", "1.0", resource(), 0, 0, chunk));
+            }
+
+            final Map<String, Object> ring = (Map<String, Object>) store.snapshot().get("traceRing");
+            assertTrue(asLong(ring.get("wrapCount")).longValue() > 0L, "必须绕圈才测得到覆盖");
+
+            final Long oldest = oldestTraces(store);
+            assertNotNull(oldest, "有可读载荷时必须给出最早时间");
+            assertTrue(oldest.longValue() > base,
+                    "最早那条的载荷已被覆盖，最早有效时间必须往后走：oldest=" + oldest);
+            assertTrue(oldest.longValue() <= base + 99 * 1_000_000_000L, "不能晚于最新那条");
+
+            // 不变量（独立于实现）：能读回载荷的行，时间都不得早于"最早有效时间"；
+            // 反之，早于它的行读回载荷必然已过期 —— 而不是被误报成"没有载荷"。
+            for (final Map<String, Object> row : store.recentSpans(500)) {
+                final long start = asLong(row.get("startTime")).longValue();
+                final LocalStore.PayloadState state = store
+                        .spanPayloadOf(asLong(row.get("id")).longValue()).getState();
+                if (state == LocalStore.PayloadState.AVAILABLE) {
+                    assertTrue(start >= oldest.longValue(),
+                            "可读载荷的开始时间不得早于最早有效时间：start=" + start + " oldest=" + oldest);
+                } else if (row.get("payloadId") != null && start < oldest.longValue()) {
+                    assertEquals(LocalStore.PayloadState.EXPIRED, state,
+                            "早于最早有效时间且写过载荷的行，必须报过期：start=" + start);
+                }
+            }
+        }
+    }
+
+    private static Long oldestTraces(final LocalStore store) {
+        final Map<String, Object> times = (Map<String, Object>) store.snapshot().get("oldestLiveTimes");
+        return (Long) times.get("traces");
+    }
+
+    @Test
     @DisplayName("按 trace 查日志：只给该 trace 的，按时间排")
     void logsOfTrace(@TempDir final File dataDir) throws Exception {
         final String trace = "0000000000000000000000000000000a";

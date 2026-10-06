@@ -423,6 +423,26 @@ class HttpReadoutTest {
     }
 
     /**
+     * 环形文件是字节级的、块里没有时间戳，所以"最早有效数据时间"只能从 H2 取，
+     * 且口径是"载荷仍在环可读窗口内的最早一条"（ADR-6 第八节）。
+     * 自监控页把它显示在环形文件表的第一列，用来一眼分清"过期"与"没存"。
+     */
+    @Test
+    @DisplayName("/api/summary 给出环文件的最早有效数据时间，自监控页有该列")
+    void summaryCarriesOldestLiveTime(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final int port = readout.getActualPort();
+            final String body = get(port, "/api/summary").body;
+            assertTrue(body.contains("\"oldestLiveTimes\""), body);
+            assertTrue(body.matches("(?s).*\"traces\":\\d+.*"),
+                    "有可读载荷的 traces 必须给数字、而不是 null：" + body);
+            assertTrue(get(port, "/self.html").body.contains("最早有效数据"),
+                    "自监控页要显示这一列");
+        }
+    }
+
+    /**
      * 存储层开不起来时读口**照起**，并给出具体原因（ADR-6 第一节）。
      *
      * <p>原来的行为是"存储不可用就不起读口"，只有一句代码注释、没有任何决策记录；
