@@ -192,7 +192,7 @@ class HttpReadoutTest {
 
             final String index = get(port, "/").body;
             for (final String page : new String[]{
-                    "traces.html", "logs.html", "metrics.html", "self.html"}) {
+                    "traces.html", "logs.html", "metrics.html", "self.html", "self-log.html"}) {
                 assertTrue(index.contains(page), "索引页要给出 " + page + " 的入口：" + index);
             }
             // 索引页一旦又开始长出数据表，"一页一条线"就名存实亡了
@@ -212,6 +212,10 @@ class HttpReadoutTest {
             final String metrics = get(port, "/metrics.html").body;
             assertTrue(metrics.contains("id=\"metrics\""), metrics);
             assertFalse(metrics.contains("id=\"spans\""), "指标页不该带 span 表：" + metrics);
+
+            final String selfLog = get(port, "/self-log.html").body;
+            assertTrue(selfLog.contains("id=\"self-log-body\""), "自日志页要有日志视图：" + selfLog);
+            assertFalse(selfLog.contains("id=\"config\""), "自日志页不该带生效配置：" + selfLog);
 
             // 生效配置属于扩展自身，因此只该出现在自监控页
             final String self = get(port, "/self.html").body;
@@ -239,9 +243,8 @@ class HttpReadoutTest {
                     "页面不许硬编码降级原因 —— 可能是路径不是目录/权限/占用/建表失败：" + shortTail(self));
             assertTrue(self.contains("id=\"config\""), "生效配置要留在这一页：" + shortTail(self));
             assertTrue(self.contains("id=\"queues\""), shortTail(self));
-            // #9 已接上：要有"扩展自己的日志"展示块，且不再留"还没接上"的占位
-            assertTrue(self.contains("id=\"self-log-body\""),
-                    "要有扩展自有日志的展示块：" + shortTail(self));
+            // 自有日志单独一页：自监控页只给入口，不再自带那块
+            assertTrue(self.contains("self-log.html"), "自日志挪去单独一页了，要给入口：" + shortTail(self));
             assertTrue(self.contains("/api/self-log"), shortTail(self));
             assertFalse(self.contains("#9"), "占位该去掉了：" + shortTail(self));
         }
@@ -446,7 +449,7 @@ class HttpReadoutTest {
 
             // 每个页面都引同一份资源 —— 复制就会漂移
             for (final String page : new String[]{"/", "/traces.html", "/logs.html",
-                    "/metrics.html", "/self.html"}) {
+                    "/metrics.html", "/self.html", "/self-log.html"}) {
                 final String body = get(port, page).body;
                 assertTrue(body.contains("href=\"app.css\""), page + " 要引 app.css");
                 assertTrue(body.contains("src=\"app.js\""), page + " 要引 app.js");
@@ -502,8 +505,9 @@ class HttpReadoutTest {
             required.put("/metrics.html", new String[]{
                 "metrics", "metrics-msg", "metrics-count", "metric-name", "wrap"});
             required.put("/self.html", new String[]{
-                "queues", "rings", "config", "msg", "s-spans", "tiles-note",
-                "self-log-body", "self-log-msg"});
+                "queues", "rings", "config", "msg", "s-spans", "tiles-note"});
+            required.put("/self-log.html", new String[]{
+                "self-log-body", "self-log-msg", "wrap"});
 
             for (final java.util.Map.Entry<String, String[]> page : required.entrySet()) {
                 final String body = get(port, page.getKey()).body;
@@ -574,7 +578,7 @@ class HttpReadoutTest {
         try (LocalStore store = storeWithOneSpan(dataDir);
              HttpReadout readout = start(dataDir, 0, false, null, store)) {
             final int port = readout.getActualPort();
-            for (final String page : new String[]{"/", "/self.html", "/app.js"}) {
+            for (final String page : new String[]{"/", "/self.html", "/self-log.html", "/app.js"}) {
                 final Response r = call(port, page, "POST", null, null);
                 assertEquals(405, r.status, page + " 应当被拒");
                 assertEquals("GET, HEAD", r.allow, page + " 的 405 要说明允许什么");
@@ -1118,7 +1122,7 @@ class HttpReadoutTest {
             assertTrue(js.contains("sessionStorage"), "token 只能放 sessionStorage");
             assertFalse(js.contains("?token="), "token 绝不能进 URL");
             for (final String page : new String[]{"/", "/traces.html", "/logs.html",
-                    "/metrics.html", "/self.html"}) {
+                    "/metrics.html", "/self.html", "/self-log.html"}) {
                 assertFalse(get(port, page).body.contains("demo-span"),
                         page + " 本身不含数据 —— 数据由 JS 带头去取");
             }

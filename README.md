@@ -130,7 +130,8 @@ java -javaagent:opentelemetry-javaagent.jar \
 | `/traces.html` | span 列表页（不含数据，数据由页面 JS 带头去取） |
 | `/logs.html` | 日志列表页，同上 |
 | `/metrics.html` | 指标点页，同上 |
-| `/self.html` | 扩展自身页：生效配置、库状态、自监控、自日志，同上 |
+| `/self.html` | 扩展自身页：生效配置、库状态、自监控，同上 |
+| `/self-log.html` | 扩展自己的日志页（结构化、按级别配色；刷新比自监控页快） |
 | `/app.css` `/app.js` | 各页面共享的样式与脚本 |
 | `/api/summary` | **唯一的自监控面**：生效配置 / 三条队列 / 各表行数 / 两个环的写游标与覆盖轮次 / 淘汰计数 / 启动时间与实际端口 / agent 版本 / 存储降级原因 / 自监控指标丢弃计数 |
 | `/api/traces?limit=&traceId=` | span 表头行（**不含载荷**），按 id 倒序；给了 `traceId` 则按开始时间排 |

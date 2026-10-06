@@ -21,6 +21,7 @@
     <a href="logs.html">日志</a>
     <a href="metrics.html">指标</a>
     <a href="self.html" aria-current="page">自监控</a>
+    <a href="self-log.html">自日志</a>
   </nav>
 </header>
 
@@ -47,22 +48,8 @@
       <b>业务指标的历史不归我们</b>：想要"最近半小时"的曲线，
       <b>业务层要自己每秒发一个点</b>，我们照常像收任何业务指标一样收下、只存不缓存。
       <br>
-      <b>扩展自己的日志</b>在下面那张卡片里（端点 <code>/api/self-log</code>），
-      排障时不用再去翻应用的标准错误。
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>扩展自己的日志</h2>
-    <div class="msg foot" id="self-log-msg">加载中…</div>
-    <div id="self-log-body" style="margin-top:12px"><span style="color:var(--dim)">–</span></div>
-    <div class="foot">
-      只读扩展<b>自己写的那一个文件</b> <code>&lt;dataDir&gt;/otelstore.log</code>
-      （单文件 1 MiB、轮转 1 份，备份是 <code>otelstore.log.1</code>）。
-      这里显示最近 500 行，<b>新的在最上面</b>；按级别配色，异常栈挂在它那条记录下面。
-      <br>
-      <b>不读应用的日志文件、也不猜 stderr 去了哪</b>：那是别人的文件，
-      为了展示扩展自己的状态去读它，等于把应用日志内容也复制到这一页上。
+      <b>扩展自己的日志</b>单独一页（<a href="self-log.html">自日志</a>，
+      端点 <code>/api/self-log</code>）—— 它刷新频率不一样，排障时不用再去翻应用的标准错误。
     </div>
   </div>
 
@@ -110,6 +97,6 @@
 </div>
 
 <script src="app.js"></script>
-<script>Otl.start('self', ['tiles', 'library', 'selflog']);</script>
+<script>Otl.start('self', ['tiles', 'library']);</script>
 </body>
 </html>

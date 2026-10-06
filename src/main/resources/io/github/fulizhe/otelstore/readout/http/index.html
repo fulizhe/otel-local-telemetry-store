@@ -19,6 +19,7 @@
     <a href="logs.html">日志</a>
     <a href="metrics.html">指标</a>
     <a href="self.html">自监控</a>
+    <a href="self-log.html">自日志</a>
   </nav>
 </header>
 
@@ -40,7 +41,11 @@
       </a>
       <a href="self.html">
         <div class="t">自监控</div>
-        <div class="d">扩展自身：生效配置、库状态、自监控指标、扩展自己的日志。</div>
+        <div class="d">扩展自身：生效配置、库状态、自监控指标。</div>
+      </a>
+      <a href="self-log.html">
+        <div class="t">自日志</div>
+        <div class="d">扩展自己写的日志（降级、限速告警、周期汇总）。刷新比自监控页快。</div>
       </a>
     </div>
   </div>
@@ -69,6 +74,7 @@
         <tr><td><code>/metrics</code></td><td>Prometheus 抓取。标签只有 <code>attr_key</code> 哈希（ADR-6 第十一节，已知取舍）</td></tr>
         <tr><td><code>/api/summary</code></td><td>计数与健康快照的 JSON</td></tr>
         <tr><td><code>/api/traces</code> <code>/api/logs</code> <code>/api/metrics</code></td><td>上面三个列表页各自的数据源</td></tr>
+        <tr><td><code>/api/self-log</code></td><td>自日志页的数据源（尾部若干行，默认 100、上限 500）</td></tr>
         <tr><td><code>/api/traces/{id}</code> <code>/api/logs/{id}</code></td><td>详情弹窗的数据源（<b>只解，不给下载</b>）</td></tr>
       </tbody>
     </table>

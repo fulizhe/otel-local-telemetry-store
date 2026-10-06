@@ -727,7 +727,7 @@ private void servePage(final HttpExchange exchange, final String asset) throws I
      * <p>值是<b>写死的资源名</b>，不是把 path 去掉斜杠拼出来的东西。
      * 差别就是安全与不安全的差别：若让 path 参与资源名拼接，
      * {@code /..%2f..%2fwhatever} 就是一个现成的穿越口子；
-     * 查表则只认这 7 个字符串，{@code /app.css/x}、{@code /app.css%2f..}
+     * 查表则只认表里这几个字符串，{@code /app.css/x}、{@code /app.css%2f..}
      * 与任何别的路径一律 404（与 ADR-6 第七节同一条道理，只是用在静态资源上）。
      *
      * <p><b>故意没有无后缀别名</b>（{@code /traces}）：少一条要维护的路径，
@@ -742,6 +742,7 @@ private void servePage(final HttpExchange exchange, final String asset) throws I
         m.put("/logs.html", "logs.html");
         m.put("/metrics.html", "metrics.html");
         m.put("/self.html", "self.html");
+        m.put("/self-log.html", "self-log.html");
         m.put("/app.css", "app.css");
         m.put("/app.js", "app.js");
         PAGE_ASSETS = java.util.Collections.unmodifiableMap(m);

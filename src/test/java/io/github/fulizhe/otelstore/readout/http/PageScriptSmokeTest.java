@@ -45,12 +45,13 @@ class PageScriptSmokeTest {
 
     private static final Charset UTF8 = Charset.forName("UTF-8");
     private static final Pattern ID = Pattern.compile("id=\"([^\"]+)\"");
+    // 第三个参数（刷新间隔，可选）也要能匹配：Otl.start('page', ['part'], 5000);
     private static final Pattern START_CALL =
-            Pattern.compile("Otl\\.start\\(\\s*'([^']+)'\\s*(?:,\\s*\\[([^\\]]*)\\])?\\s*\\);");
+            Pattern.compile("Otl\\.start\\(\\s*'([^']+)'\\s*(?:,\\s*\\[([^\\]]*)\\])?[^)]*\\);");
     private static final Pattern QUOTED = Pattern.compile("'([^']+)'");
 
     private static final String[] PAGES = {
-        "index.html", "traces.html", "logs.html", "metrics.html", "self.html"};
+        "index.html", "traces.html", "logs.html", "metrics.html", "self.html", "self-log.html"};
 
     @Test
     @DisplayName("每个页面都真的跑一遍 app.js：不抛异常，且声明过的部分真的动了数据")

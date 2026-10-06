@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>扩展自己的日志 · otel-local-telemetry-store</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <h1>扩展自己的日志</h1>
+  <div class="sub">
+    这里只有<b>扩展自己</b>写的日志（降级、限速告警、周期汇总）。
+    它刷新得比 <a href="self.html" style="color:var(--dim)">自监控页</a>快 —— 日志是用来盯着看的。
+    <span class="pill" id="tick">每 5s 刷新</span>
+  </div>
+  <nav class="pages">
+    <a href="index.html">索引</a>
+    <a href="traces.html">span</a>
+    <a href="logs.html">日志</a>
+    <a href="metrics.html">指标</a>
+    <a href="self.html">自监控</a>
+    <a href="self-log.html" aria-current="page">自日志</a>
+  </nav>
+</header>
+
+<div class="wrap" id="wrap">
+  <div class="card">
+    <h2>扩展自己的日志 <span class="pill" id="self-log-msg">加载中…</span></h2>
+    <div id="self-log-body" style="margin-top:12px"><span style="color:var(--dim)">–</span></div>
+    <div class="foot">
+      只读扩展<b>自己写的那一个文件</b> <code>&lt;dataDir&gt;/otelstore.log</code>
+      （单文件 1 MiB、轮转 1 份，备份是 <code>otelstore.log.1</code>）。
+      这里显示最近 500 行，<b>新的在最上面</b>；按级别配色（WARNING 黄、SEVERE 红），
+      异常栈挂在它那条记录下面，容器可滚动。
+      <br>
+      <b>不读应用的日志文件、也不猜 stderr 去了哪</b>：那是别人的文件，
+      为了展示扩展自己的状态去读它，等于把应用日志内容也复制到读口页面上。
+      数据来自 <code>/api/self-log</code>（默认 100、上限 500）。
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>Otl.start('self-log', ['selflog'], 5000);</script>
+</body>
+</html>

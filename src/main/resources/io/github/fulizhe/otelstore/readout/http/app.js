@@ -886,6 +886,9 @@ var Otl = (function () {
         + (errors ? ' · 错误 ' + errors : '');
     }
     if (!has('self-log-body')) { return; }
+    var host = $('self-log-body');
+    // 刷新会整块重画；先记住滚动位置，否则每 5 秒把正在看旧记录的人弹回顶部
+    var prevTop = host.firstElementChild ? host.firstElementChild.scrollTop : 0;
 
     // 新的在最上面：想看"最近出过什么事"不必先滚到底
     entries.reverse();
@@ -906,8 +909,9 @@ var Otl = (function () {
         + 'border:1px solid var(--line);border-radius:6px;overflow:auto;white-space:pre-wrap;'
         + 'color:var(--dim)">' + esc(e.extra.join('\n')) + '</pre>';
     }).join('');
-    $('self-log-body').innerHTML = '<div style="max-height:62vh;overflow:auto;'
+    host.innerHTML = '<div style="max-height:72vh;overflow:auto;'
       + 'border:1px solid var(--line);border-radius:6px;padding:2px 10px">' + rows + '</div>';
+    if (prevTop && host.firstElementChild) { host.firstElementChild.scrollTop = prevTop; }
   }
 
   /** 段名 → 表格 tbody 的 id。**这两者不是同一个词**，别靠"恰好同名"活着。 */
@@ -967,8 +971,10 @@ var Otl = (function () {
   /**
    * @param page 段名，只用于报错时说清是哪个页面。
    * @param parts 要跑的部分，见 {@link LOADERS} 的键。
+   * @param refreshMs 自动刷新间隔（毫秒）。不给就用默认的 {@link REFRESH_MS}。
+   *        自日志页另给小值：它是要盯着看的，而配置/队列几十秒看一次就够。
    */
-  function start(page, parts) {
+  function start(page, parts, refreshMs) {
     injectShell();
     if (has('token') && token()) { $('token').value = token(); }
 
@@ -999,7 +1005,7 @@ var Otl = (function () {
     if (has('metric-name') && param('name')) { $('metric-name').value = param('name'); }
 
     runReload();
-    setInterval(runReload, REFRESH_MS);
+    setInterval(runReload, (typeof refreshMs === 'number' && refreshMs > 0) ? refreshMs : REFRESH_MS);
   }
 
   function runReload() {
