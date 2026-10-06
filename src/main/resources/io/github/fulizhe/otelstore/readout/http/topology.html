@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>依赖拓扑 · otel-local-telemetry-store</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <h1>依赖拓扑</h1>
+  <div class="sub">
+    本进程最近调用过的<b>外部组件</b>。<b>只到组件类型</b>，不区分实例地址；
+    边粗 = 调用量，边色 = 错误率。数据来自 <code>/api/topology</code>（ADR-8）。
+  </div>
+  <nav class="pages">
+    <a href="index.html">索引</a>
+    <a href="traces.html">span</a>
+    <a href="logs.html">日志</a>
+    <a href="metrics.html">指标</a>
+    <a href="topology.html" aria-current="page">拓扑</a>
+    <a href="self.html">自监控</a>
+    <a href="self-log.html">自日志</a>
+  </nav>
+</header>
+
+<div class="wrap" id="wrap">
+  <div class="card">
+    <h2>调用关系图 <span class="pill" id="topology-msg">加载中…</span></h2>
+    <div id="topology" style="margin-top:10px"><span style="color:var(--dim)">–</span></div>
+    <div class="foot">
+      <b>方形</b>是本服务（Resource 的 <code>service.name</code>），<b>圆形</b>是外部组件
+      （CLIENT/PRODUCER span 的 <code>scopeName</code>）。边按父 span → 子 span 聚合成
+      调用量 / 错误 / 耗时。
+      <br>
+      <b>H2 与 MySQL 都是 <code>jdbc</code>，会并成一个「JDBC」节点</b> —— 想区分就得先把
+      <code>db.system</code> 提成列（见 <code>docs/adr/adr-08-dependency-topology.md</code>）。
+      <b>连接都没建起来的调用不会出现在图上</b>，所以某个组件缺席不等于"没有这个调用"。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>边列表 <span class="pill" id="topology-count"></span></h2>
+    <table>
+      <thead><tr><th>从</th><th>到</th><th class="num">调用</th><th class="num">错误</th>
+        <th class="num">平均</th><th class="num">最大</th><th>操作样例</th></tr></thead>
+      <tbody id="topology-table"><tr><td colspan="7" style="color:var(--dim)">–</td></tr></tbody>
+    </table>
+    <div id="topology-note" class="foot"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>Otl.start('topology', ['topology']);</script>
+</body>
+</html>

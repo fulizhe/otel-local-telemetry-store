@@ -51,7 +51,8 @@ class PageScriptSmokeTest {
     private static final Pattern QUOTED = Pattern.compile("'([^']+)'");
 
     private static final String[] PAGES = {
-        "index.html", "traces.html", "logs.html", "metrics.html", "self.html", "self-log.html"};
+        "index.html", "traces.html", "logs.html", "metrics.html", "topology.html",
+        "self.html", "self-log.html"};
 
     @Test
     @DisplayName("每个页面都真的跑一遍 app.js：不抛异常，且声明过的部分真的动了数据")
@@ -132,6 +133,9 @@ final Exec r = exec(node, script.toString());
         }
         if ("selflog".equals(part)) {
             return "self-log-body";
+        }
+        if ("topology".equals(part)) {
+            return "topology";
         }
         return "queues";
     }
@@ -349,6 +353,17 @@ final Exec r = exec(node, script.toString());
             + "    body = { lines: ['2026-01-01 00:00:00.000 WARNING ThrottledLogger 存储层降级',"
             + " '2026-01-01 00:00:01.000 INFO LocalStoreCustomizerProvider 已注册三条采集管线'],"
             + " file: 'otelstore.log', note: '' };\n"
+            + "  }\n"
+            // 依赖拓扑：节点 + 边，页面画成内联 SVG 写进 #topology
+            + "  else if (url.indexOf('/api/topology') >= 0) {\n"
+            + "    body = { nodes: [ { id: 'service:demo', label: 'demo', type: 'service' },"
+            + " { id: 'scope:io.opentelemetry.jdbc', label: 'io.opentelemetry.jdbc', type: 'component' },"
+            + " { id: 'scope:io.opentelemetry.jedis-3.0', label: 'io.opentelemetry.jedis-3.0',"
+            + " type: 'component' } ],"
+            + " edges: [ { from: 'service:demo', to: 'scope:io.opentelemetry.jdbc', calls: 10, errors: 1,"
+            + " avgMs: 2.5, maxMs: 9, names: ['SELECT 1'] },"
+            + " { from: 'service:demo', to: 'scope:io.opentelemetry.jedis-3.0', calls: 4, errors: 0,"
+            + " avgMs: 1.1, maxMs: 3, names: ['SET'] } ], scannedSpans: 200, note: 'x' };\n"
             + "  }\n"
             + "  else if (url.indexOf('/api/') === 0) { body = ROW; }\n"
             + "  else { body = {}; }\n"

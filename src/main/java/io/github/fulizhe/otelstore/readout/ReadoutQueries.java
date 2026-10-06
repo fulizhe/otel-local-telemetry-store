@@ -5,8 +5,11 @@ import io.github.fulizhe.otelstore.core.storage.LocalStore;
 import io.github.fulizhe.otelstore.core.util.SelfLog;
 import io.github.fulizhe.otelstore.core.util.ThrottledLogger;
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -64,6 +67,13 @@ public final class ReadoutQueries {
      */
     public static final int DEFAULT_SELF_LOG_LINES = 100;
     public static final int MAX_SELF_LOG_LINES = 500;
+
+    /**
+     * 依赖拓扑一次最多看多少条 span（[ADR-8]）。
+     *
+     * <p>它不是列表：拓扑要的是"样本足够多才拼得出稳定的图"，默认就拉满。
+     */
+    public static final int MAX_LIMIT_TOPOLOGY = 2000;
 
     private final LocalStoreConfig config;
     private final LocalStore store;
@@ -376,6 +386,240 @@ public final class ReadoutQueries {
             return DEFAULT_SELF_LOG_LINES;
         }
         return Math.min(lines, MAX_SELF_LOG_LINES);
+    }
+
+    /**
+     * 依赖拓扑：把最近若干条 span 聚合成"组件调用图"（[ADR-8]）。
+     *
+     * <p>纯读 + 内存聚合：节点是 {@code service}（Resource 的 {@code service.name}）与
+     * {@code component}（CLIENT/PRODUCER span 的 {@code scopeName}），边是"父节点 → 子节点"。
+     * 没有存储层时返回 {@code null}（与列表端点一致）。
+     */
+    public Map<String, Object> topology(final int limit) {
+        if (store == null) {
+            return null;
+        }
+        final int n = clampTopology(limit);
+        final List<Map<String, Object>> rows;
+        try {
+            rows = store.recentSpans(n);
+        } catch (final Exception e) {
+            ThrottledLogger.warn("readout-topology", "读 span 做拓扑失败", e);
+            return null;
+        }
+        return aggregateTopology(rows, resourceAttributesOf(rows), n);
+    }
+
+    /** 拓扑缺省与上限同一档：它是聚合，默认就拉满（ADR-8）。 */
+    public static int clampTopology(final int limit) {
+        if (limit <= 0) {
+            return MAX_LIMIT_TOPOLOGY;
+        }
+        return Math.min(limit, MAX_LIMIT_TOPOLOGY);
+    }
+
+    /**
+     * 把 span 行聚合成节点与边。<b>纯函数</b>，不用起存储层就能单测。
+     *
+     * @param rows      最近若干条 span 表头行（含 spanId / parentSpanId / kind / scopeName / ...）
+     * @param resources {@code resourceId → Resource 规范化文本}（用来取 service.name）
+     */
+    static Map<String, Object> aggregateTopology(final List<Map<String, Object>> rows,
+            final Map<Long, String> resources, final int scanned) {
+        final Map<String, Map<String, Object>> spanById =
+                new HashMap<String, Map<String, Object>>();
+        for (final Map<String, Object> row : rows) {
+            spanById.put(text(row.get("spanId")), row);
+        }
+
+        final Map<String, Node> nodes = new LinkedHashMap<String, Node>();
+        final Map<String, Edge> edges = new LinkedHashMap<String, Edge>();
+        for (final Map<String, Object> row : rows) {
+            final String parentId = text(row.get("parentSpanId"));
+            final Map<String, Object> parent = parentId.isEmpty() ? null : spanById.get(parentId);
+            if (parent != null) {
+                addEdge(edges, nodeOf(parent, resources, nodes), nodeOf(row, resources, nodes), row);
+            } else if (isOutbound(row)) {
+                // 父不在结果集里（被行数水位淘汰 / 被 limit 截断）也至少保住"这个出口发生过"
+                addEdge(edges, serviceNodeOf(row, resources, nodes), nodeOf(row, resources, nodes), row);
+            }
+        }
+
+        final List<Map<String, Object>> nodeList =
+                new ArrayList<Map<String, Object>>(nodes.size());
+        for (final Node node : nodes.values()) {
+            final Map<String, Object> m = new LinkedHashMap<String, Object>();
+            m.put("id", node.id);
+            m.put("label", node.label);
+            m.put("type", node.type);
+            nodeList.add(m);
+        }
+        final List<Map<String, Object>> edgeList =
+                new ArrayList<Map<String, Object>>(edges.size());
+        for (final Edge edge : edges.values()) {
+            edgeList.add(edge.toMap());
+        }
+        final Map<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("nodes", nodeList);
+        out.put("edges", edgeList);
+        out.put("scannedSpans", Integer.valueOf(scanned));
+        out.put("note", "节点只到组件类型：同一 scopeName 的多个实例并成一个节点"
+                + "（H2 与 MySQL 都是 jdbc，会并成一个「JDBC」）。只看了最近 " + scanned
+                + " 条 span；连接都没建起来的调用不会出现在图上。");
+        return out;
+    }
+
+    private static void addEdge(final Map<String, Edge> edges, final Node from, final Node to,
+            final Map<String, Object> row) {
+        final String key = from.id + '\u0000' + to.id;
+        Edge edge = edges.get(key);
+        if (edge == null) {
+            edge = new Edge(from, to);
+            edges.put(key, edge);
+        }
+        edge.add(row);
+    }
+
+    private static Node nodeOf(final Map<String, Object> row, final Map<Long, String> resources,
+            final Map<String, Node> nodes) {
+        if (isOutbound(row)) {
+            final String scope = text(row.get("scopeName"));
+            final String id = "scope:" + (scope.isEmpty() ? "unknown" : scope);
+            Node node = nodes.get(id);
+            if (node == null) {
+                node = new Node(id, scope.isEmpty() ? "未标注来源" : scope, "component");
+                nodes.put(id, node);
+            }
+            return node;
+        }
+        return serviceNodeOf(row, resources, nodes);
+    }
+
+    private static Node serviceNodeOf(final Map<String, Object> row,
+            final Map<Long, String> resources, final Map<String, Node> nodes) {
+        final String name = serviceName(row, resources);
+        final String id = "service:" + name;
+        Node node = nodes.get(id);
+        if (node == null) {
+            node = new Node(id, name, "service");
+            nodes.put(id, node);
+        }
+        return node;
+    }
+
+    /** CLIENT / PRODUCER 是"伸出去的调用"；其余（SERVER/INTERNAL/CONSUMER）算本服务。 */
+    private static boolean isOutbound(final Map<String, Object> row) {
+        final Object k = row.get("kind");
+        final int kind = k instanceof Number ? ((Number) k).intValue() : -1;
+        return kind == 2 || kind == 3;
+    }
+
+    /** 从 Resource 文本里取 service.name；取不到就写「本进程」。 */
+    static String serviceName(final Map<String, Object> row, final Map<Long, String> resources) {
+        final Object rid = row.get("resourceId");
+        final String resourceText = rid instanceof Number
+                ? resources.get(Long.valueOf(((Number) rid).longValue())) : null;
+        final String name = parseServiceName(resourceText);
+        return name == null ? "本进程" : name;
+    }
+
+    /** Resource 规范化文本形如 {@code service.name=s:demo k2=...}（值前有类型前缀 {@code s:}）。 */
+    static String parseServiceName(final String resourceText) {
+        if (resourceText == null) {
+            return null;
+        }
+        final String key = "service.name=";
+        final int i = resourceText.indexOf(key);
+        if (i < 0) {
+            return null;
+        }
+        final int start = i + key.length();
+        int end = resourceText.indexOf(' ', start);
+        if (end < 0) {
+            end = resourceText.length();
+        }
+        String value = resourceText.substring(start, end).trim();
+        if (value.isEmpty()) {
+            return null;
+        }
+        // 值形如 "s:demo"：去掉一个短的"类型:"前缀
+        final int colon = value.indexOf(':');
+        if (colon >= 0 && colon <= 3) {
+            value = value.substring(colon + 1);
+        }
+        return value.isEmpty() ? null : value;
+    }
+
+    private static String text(final Object o) {
+        return o == null ? "" : o.toString();
+    }
+
+    private static long nanos(final Object o) {
+        return o instanceof Number ? ((Number) o).longValue() : 0L;
+    }
+
+    private static final class Node {
+        final String id;
+        final String label;
+        final String type;
+
+        Node(final String id, final String label, final String type) {
+            this.id = id;
+            this.label = label;
+            this.type = type;
+        }
+    }
+
+    /** 一条边的累加器：调用量、错误、耗时和/最值、去重后的操作名。 */
+    private static final class Edge {
+        private static final int MAX_NAMES = 8;
+
+        final Node from;
+        final Node to;
+        long calls;
+        long errors;
+        long durationSumNanos;
+        long durationMaxNanos;
+        final LinkedHashSet<String> names = new LinkedHashSet<String>();
+
+        Edge(final Node from, final Node to) {
+            this.from = from;
+            this.to = to;
+        }
+
+        void add(final Map<String, Object> row) {
+            calls++;
+            final Object status = row.get("statusCode");
+            if (status instanceof Number && ((Number) status).intValue() == 2) {
+                errors++;
+            }
+            final long start = nanos(row.get("startTime"));
+            final long end = nanos(row.get("endTime"));
+            final long d = end > start ? end - start : 0L;
+            durationSumNanos += d;
+            if (d > durationMaxNanos) {
+                durationMaxNanos = d;
+            }
+            if (names.size() < MAX_NAMES) {
+                final String name = text(row.get("name"));
+                if (!name.isEmpty()) {
+                    names.add(name);
+                }
+            }
+        }
+
+        Map<String, Object> toMap() {
+            final Map<String, Object> m = new LinkedHashMap<String, Object>();
+            m.put("from", from.id);
+            m.put("to", to.id);
+            m.put("calls", Long.valueOf(calls));
+            m.put("errors", Long.valueOf(errors));
+            m.put("avgMs", Double.valueOf(calls == 0 ? 0d
+                    : (durationSumNanos / 1_000_000d) / calls));
+            m.put("maxMs", Double.valueOf(durationMaxNanos / 1_000_000d));
+            m.put("names", new ArrayList<String>(names));
+            return m;
+        }
     }
 
     /**

@@ -914,6 +914,174 @@ var Otl = (function () {
     if (prevTop && host.firstElementChild) { host.firstElementChild.scrollTop = prevTop; }
   }
 
+  // ---------------- 依赖拓扑（ADR-8）
+
+  function loadTopology() {
+    fetch('/api/topology', { headers: headers(), cache: 'no-store' })
+      .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
+      .then(renderTopology)
+      .catch(function (e) {
+        if (has('topology-msg')) {
+          $('topology-msg').innerHTML = '<span class="err">读拓扑失败：' + esc(e.message) + '</span>';
+        }
+      });
+  }
+
+  /**
+   * scopeName → 人能认的组件名。
+   * 只到"组件类型"、不区分实例地址 —— 所以 H2 与 MySQL 都是 JDBC（ADR-8 明确接受的取舍）。
+   */
+  function shortComponent(scope) {
+    var s = String(scope || '');
+    if (!s) { return '未标注'; }
+    var low = s.toLowerCase();
+    if (low.indexOf('jdbc') >= 0) { return 'JDBC'; }
+    if (low.indexOf('jedis') >= 0) { return 'Redis'; }
+    if (low.indexOf('kafka') >= 0) { return 'Kafka'; }
+    if (low.indexOf('grpc') >= 0) { return 'gRPC'; }
+    if (low.indexOf('tomcat') >= 0 || low.indexOf('servlet') >= 0) { return 'HTTP 服务'; }
+    var parts = s.split('.');
+    return parts[parts.length - 1];
+  }
+
+  function nodeLabel(n) { return n.type === 'component' ? shortComponent(n.label) : n.label; }
+
+  function edgeRate(e) { return e.calls ? (e.errors / e.calls) : 0; }
+
+  function edgeColor(rate) {
+    if (rate >= 0.05) { return '#f85149'; }
+    if (rate >= 0.01) { return '#e08c3a'; }
+    if (rate > 0) { return '#d29922'; }
+    return '#3fb950';
+  }
+
+  function renderTopology(res) {
+    if (res.s === 401) { unauth(); return; }
+    if (res.s !== 200 || !res.d) {
+      if (has('topology-msg')) {
+        $('topology-msg').innerHTML = '<span class="err">' + esc(errorText(res)) + '</span>';
+      }
+      return;
+    }
+    var d = res.d;
+    var nodes = d.nodes || [];
+    var edges = d.edges || [];
+    if (has('topology-count')) { $('topology-count').textContent = edges.length + ' 条边'; }
+    if (has('topology-note')) { $('topology-note').textContent = d.note || ''; }
+
+    var byId = {};
+    nodes.forEach(function (n) { byId[n.id] = n; });
+    if (has('topology-table')) {
+      var rows = edges.slice().sort(function (a, b) { return b.calls - a.calls; }).map(function (e) {
+        var from = byId[e.from] ? nodeLabel(byId[e.from]) : e.from;
+        var to = byId[e.to] ? nodeLabel(byId[e.to]) : e.to;
+        return '<tr><td>' + esc(from) + '</td><td>' + esc(to) + '</td>'
+          + '<td class="num">' + num(e.calls) + '</td>'
+          + '<td class="num">' + (e.errors ? '<span class="err">' + num(e.errors) + '</span>' : '0') + '</td>'
+          + '<td class="num">' + esc(fmtNum(round(e.avgMs))) + ' ms</td>'
+          + '<td class="num">' + esc(fmtNum(round(e.maxMs))) + ' ms</td>'
+          + '<td>' + esc(clip((e.names || []).join(' · ') || '–', 80)) + '</td></tr>';
+      }).join('');
+      $('topology-table').innerHTML = rows
+        || '<tr><td colspan="7" style="color:var(--dim)">没有边</td></tr>';
+    }
+
+    if (has('topology-msg')) {
+      $('topology-msg').textContent = edges.length
+        ? ('最近 ' + num(d.scannedSpans) + ' 条 span · ' + nodes.length + ' 个节点 · ' + edges.length + ' 条边')
+        : '没有可画的依赖边';
+    }
+    if (!has('topology')) { return; }
+    if (!edges.length) {
+      $('topology').innerHTML = '<div class="foot">最近 ' + num(d.scannedSpans)
+        + ' 条 span 里没有跨组件的调用 —— 先打一次带外部依赖的请求'
+        + '（demo：<code>/demo/deps/all</code>）。</div>';
+      return;
+    }
+    $('topology').innerHTML = topologySvg(nodes, edges);
+  }
+
+  /** 环状布局：服务节点居中竖直排，组件环绕；边粗 ∝ 调用量、边色 ∝ 错误率。 */
+  function topologySvg(nodes, edges) {
+    var W = 900, H = 560, CX = W / 2, CY = H / 2;
+    var services = nodes.filter(function (n) { return n.type === 'service'; });
+    var comps = nodes.filter(function (n) { return n.type !== 'service'; });
+    var pos = {};
+    services.forEach(function (n, i) {
+      pos[n.id] = { x: CX, y: CY + (i - (services.length - 1) / 2) * 90, kind: 'service' };
+    });
+    var R = Math.min(W, H) / 2 - 80;
+    comps.forEach(function (n, i) {
+      var ang = (2 * Math.PI * i) / Math.max(1, comps.length) - Math.PI / 2;
+      pos[n.id] = { x: CX + R * Math.cos(ang), y: CY + R * Math.sin(ang), kind: 'component' };
+    });
+
+    var maxCalls = 1;
+    edges.forEach(function (e) { if (e.calls > maxCalls) { maxCalls = e.calls; } });
+    var widthOf = function (e) {
+      return 1 + Math.log(e.calls + 1) / Math.log(maxCalls + 1) * 6;
+    };
+    var radiusOf = function (p) { return p.kind === 'service' ? 40 : 26; };
+
+    var svg = ['<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="依赖拓扑"'
+      + ' style="width:100%;height:auto">'];
+    svg.push('<defs><marker id="tp-arrow" viewBox="0 0 10 10" refX="9" refY="5"'
+      + ' markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
+      + '<path d="M0,0 L10,5 L0,10 z" style="fill:#8b949e"/></marker></defs>');
+
+    edges.forEach(function (e) {
+      var a = pos[e.from], b = pos[e.to];
+      if (!a || !b) { return; }
+      var color = edgeColor(edgeRate(e));
+      var w = widthOf(e).toFixed(1);
+      if (e.from === e.to) {
+        svg.push('<circle cx="' + a.x.toFixed(1) + '" cy="' + (a.y - radiusOf(a) - 6).toFixed(1)
+          + '" r="13" fill="none" stroke="' + color + '" stroke-width="' + w + '"/>');
+        return;
+      }
+      var dx = b.x - a.x, dy = b.y - a.y;
+      var len = Math.sqrt(dx * dx + dy * dy) || 1;
+      var ux = dx / len, uy = dy / len;
+      var x1 = a.x + ux * radiusOf(a), y1 = a.y + uy * radiusOf(a);
+      var x2 = b.x - ux * (radiusOf(b) + 2), y2 = b.y - uy * (radiusOf(b) + 2);
+      svg.push('<line x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1) + '" x2="' + x2.toFixed(1)
+        + '" y2="' + y2.toFixed(1) + '" stroke="' + color + '" stroke-width="' + w
+        + '" marker-end="url(#tp-arrow)" opacity="0.9"/>');
+    });
+
+    nodes.forEach(function (n) {
+      var p = pos[n.id];
+      if (!p) { return; }
+      var label = esc(clip(nodeLabel(n), 18));
+      if (n.type === 'service') {
+        svg.push('<rect x="' + (p.x - 52) + '" y="' + (p.y - 22) + '" width="104" height="44" rx="9"'
+          + ' style="fill:var(--panel-2);stroke:var(--ok);stroke-width:1.6"/>');
+        svg.push('<text x="' + p.x + '" y="' + (p.y + 4) + '" text-anchor="middle"'
+          + ' style="fill:var(--fg)" font-size="13">' + label + '</text>');
+        svg.push('<text x="' + p.x + '" y="' + (p.y + 36) + '" text-anchor="middle"'
+          + ' style="fill:var(--dim)" font-size="10">本服务</text>');
+      } else {
+        svg.push('<circle cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="26"'
+          + ' style="fill:var(--panel-2);stroke:var(--line);stroke-width:1.4"/>');
+        svg.push('<text x="' + p.x.toFixed(1) + '" y="' + (p.y + 4) + '" text-anchor="middle"'
+          + ' style="fill:var(--fg)" font-size="12">' + label + '</text>');
+      }
+    });
+    svg.push('</svg>');
+    svg.push('<div class="legend" style="margin-top:8px;display:flex;gap:16px;flex-wrap:wrap;'
+      + 'color:var(--dim);font-size:12px">'
+      + '<span><span style="display:inline-block;width:12px;height:3px;background:#3fb950;'
+      + 'margin-right:5px"></span>无错误</span>'
+      + '<span><span style="display:inline-block;width:12px;height:3px;background:#d29922;'
+      + 'margin-right:5px"></span>&lt;1%</span>'
+      + '<span><span style="display:inline-block;width:12px;height:3px;background:#e08c3a;'
+      + 'margin-right:5px"></span>&lt;5%</span>'
+      + '<span><span style="display:inline-block;width:12px;height:3px;background:#f85149;'
+      + 'margin-right:5px"></span>≥5%</span>'
+      + '<span>边粗 = 调用量</span></div>');
+    return svg.join('');
+  }
+
   /** 段名 → 表格 tbody 的 id。**这两者不是同一个词**，别靠"恰好同名"活着。 */
   var TABLE_OF = { traces: 'spans', logs: 'logs', metrics: 'metrics' };
 
@@ -963,6 +1131,7 @@ var Otl = (function () {
     traces: loadTraces,
     logs: loadLogs,
     metrics: loadMetrics,
+    topology: loadTopology,
     tiles: function () { return loadSummary(tiles); },
     library: function () { return loadSummary(libraryTables); },
     selflog: loadSelfLog

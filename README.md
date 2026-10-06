@@ -130,6 +130,7 @@ java -javaagent:opentelemetry-javaagent.jar \
 | `/traces.html` | span 列表页（不含数据，数据由页面 JS 带头去取） |
 | `/logs.html` | 日志列表页，同上 |
 | `/metrics.html` | 指标点页，同上 |
+| `/topology.html` | 依赖拓扑页：本进程调用过的**外部组件**（组件级，内联 SVG）。见 [ADR-8](docs/adr/adr-08-dependency-topology.md) |
 | `/self.html` | 扩展自身页：生效配置、库状态、自监控，同上 |
 | `/self-log.html` | 扩展自己的日志页（结构化、按级别配色；手动刷新） |
 | `/app.css` `/app.js` | 各页面共享的样式与脚本 |
@@ -140,6 +141,7 @@ java -javaagent:opentelemetry-javaagent.jar \
 | `/api/traces/{id}` `/api/logs/{id}` | 单条详情：表头 + 载荷状态 + **解码后的** attributes / events / status。`{id}` 必须是纯数字 |
 | `/metrics` | Prometheus 文本（每个指标每个属性组合的**当前值**） |
 | `/api/self-log?lines=` | 扩展自己日志的尾部若干行（默认 100、上限 500）；只读扩展自己写的 `<dataDir>/otelstore.log`，不读应用的日志文件 |
+| `/api/topology?limit=` | 依赖拓扑：最近若干条 span 聚合成组件级节点与边（默认/上限 2000）。见 [ADR-8](docs/adr/adr-08-dependency-topology.md) |
 
 页面**路径精确匹配**，没有无后缀别名（`/traces` 会 404，入口都在 `/`）。
 

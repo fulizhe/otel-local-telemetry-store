@@ -266,6 +266,10 @@ final String path = exchange.getRequestURI().getPath();
                     serveSelfLog(exchange);
                     return;
                 }
+                if ("/api/topology".equals(path)) {
+                    serveTopology(exchange);
+                    return;
+                }
                 sendError(exchange, 404, "not_found",
                         "没有这个端点。读口的端点清单是封闭的，见 docs/adr/adr-06-readout-http-surface.md");
             } catch (final RuntimeException e) {
@@ -365,6 +369,29 @@ private void servePage(final HttpExchange exchange, final String asset) throws I
             }
             final Map<String, String> q = queryParams(exchange.getRequestURI().getRawQuery());
             serveJson(exchange, queries.selfLog(parseLimit(q.get("lines"))));
+        }
+
+        /**
+         * 依赖拓扑（ADR-8）：最近若干条 span 聚合成的组件级节点与边。
+         *
+         * <p>没有存储时按列表端点的口径报 503；聚合自身失败报 500（栈只进扩展自己的日志）。
+         */
+        private void serveTopology(final HttpExchange exchange) throws IOException {
+            if (!authorized(exchange)) {
+                return;
+            }
+            final Map<String, String> q = queryParams(exchange.getRequestURI().getRawQuery());
+            final Map<String, Object> result = queries.topology(parseLimit(q.get("limit")));
+            if (result == null) {
+                if (!queries.isStoreAvailable()) {
+                    sendError(exchange, 503, "no_store",
+                            "存储层不可用，本次只计数不落库。原因是数据目录不可写，详见扩展自己的日志。");
+                } else {
+                    sendError(exchange, 500, "internal", "聚合拓扑失败，详情见扩展自己的日志");
+                }
+                return;
+            }
+            serveJson(exchange, result);
         }
 
         /**
@@ -741,6 +768,7 @@ private void servePage(final HttpExchange exchange, final String asset) throws I
         m.put("/traces.html", "traces.html");
         m.put("/logs.html", "logs.html");
         m.put("/metrics.html", "metrics.html");
+        m.put("/topology.html", "topology.html");
         m.put("/self.html", "self.html");
         m.put("/self-log.html", "self-log.html");
         m.put("/app.css", "app.css");

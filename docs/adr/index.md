@@ -12,6 +12,7 @@
 | [adr-05](adr-05-shade-third-party-deps-into-extension-jar.md) | 三方依赖（H2 / protobuf / opentelemetry-proto）shade 进扩展 jar；protobuf 与 otel-proto 必须 relocation | 已定（Phase 4b 实测修正） |
 | [adr-06](adr-06-readout-http-surface.md) | HTTP 读口只开一个端口，端点清单封闭、JSON 手写；自监控指标只走读口旁路不入库 | 已定（Phase 5 待实现） |
 | [adr-07](adr-07-demo-app-embedded-deps-except-mysql.md) | demo-app 的依赖全部内嵌，唯一例外 MySQL 连外部实例且**降级不崩** | 已定 |
+| [adr-08](adr-08-dependency-topology.md) | 依赖拓扑图按组件级聚合（span 的 kind×scopeName 推导），`/api/topology` + `topology.html`，内联 SVG | 已定 |
 
 ## 悬着的事
 

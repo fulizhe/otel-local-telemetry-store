@@ -192,7 +192,8 @@ class HttpReadoutTest {
 
             final String index = get(port, "/").body;
             for (final String page : new String[]{
-                    "traces.html", "logs.html", "metrics.html", "self.html", "self-log.html"}) {
+                    "traces.html", "logs.html", "metrics.html", "topology.html",
+                    "self.html", "self-log.html"}) {
                 assertTrue(index.contains(page), "索引页要给出 " + page + " 的入口：" + index);
             }
             // 索引页一旦又开始长出数据表，"一页一条线"就名存实亡了
@@ -216,6 +217,10 @@ class HttpReadoutTest {
             final String selfLog = get(port, "/self-log.html").body;
             assertTrue(selfLog.contains("id=\"self-log-body\""), "自日志页要有日志视图：" + selfLog);
             assertFalse(selfLog.contains("id=\"config\""), "自日志页不该带生效配置：" + selfLog);
+
+            final String topo = get(port, "/topology.html").body;
+            assertTrue(topo.contains("id=\"topology\""), "拓扑页要有图容器：" + topo);
+            assertFalse(topo.contains("id=\"config\""), "拓扑页不该带生效配置：" + topo);
 
             // 生效配置属于扩展自身，因此只该出现在自监控页
             final String self = get(port, "/self.html").body;
@@ -318,6 +323,44 @@ class HttpReadoutTest {
             assertEquals(200, r.status, "文件不在不是错误：" + r.body);
             assertEquals(0, selfLinesIn(r.body), r.body);
             assertTrue(r.body.contains("暂无内容"), "要把'暂时没有'说清楚：" + r.body);
+        }
+    }
+
+    /** 造一条用于拓扑的 span（service.name 给定，方便验证 service 节点）。 */
+    private static SpanRecord depsSpan(final String traceId, final String spanId,
+            final String parentSpanId, final String name, final int kind, final int statusCode,
+            final String scope, final String serviceName) {
+        return new SpanRecord(traceId, spanId, parentSpanId, name, kind, 1000000000L, 2000000000L,
+                statusCode, null, scope, "1.0",
+                new ResourceDescriptor(
+                        Collections.singletonList(KeyValue.of("service.name", serviceName))),
+                0, 0, null);
+    }
+
+    @Test
+    @DisplayName("/api/topology：把 span 聚合成组件级节点与边（service → component）")
+    void topologyAggregatesServiceAndComponents(@TempDir final File dataDir) throws Exception {
+        final String trace = "abcdef0123456789abcdef0123456789";
+        try (LocalStore store = new LocalStore(config(dataDir, 0, false, null))) {
+            store.store(depsSpan(trace, "s1", "", "GET /demo", 1, 0,
+                    "io.opentelemetry.tomcat-10.0", "demo"));
+            store.store(depsSpan(trace, "s2", "s1", "SELECT 1", 2, 2,
+                    "io.opentelemetry.jdbc", "demo"));
+            store.store(depsSpan(trace, "s3", "gone", "SET k", 2, 0,
+                    "io.opentelemetry.jedis-3.0", "demo"));
+            try (HttpReadout readout = start(dataDir, 0, false, null, store)) {
+                final String body = get(readout.getActualPort(), "/api/topology").body;
+                assertTrue(body.contains("\"label\":\"demo\""), "要有 service 节点：" + body);
+                assertTrue(body.contains("\"type\":\"service\""), body);
+                assertTrue(body.contains(
+                        "\"from\":\"service:demo\",\"to\":\"scope:io.opentelemetry.jdbc\""),
+                        "server→jdbc 的边：" + body);
+                assertTrue(body.contains(
+                        "\"from\":\"service:demo\",\"to\":\"scope:io.opentelemetry.jedis-3.0\""),
+                        "父不在结果集里的出口边也要保住：" + body);
+                assertTrue(body.contains("\"errors\":1"), "那条 jdbc span 标了错误：" + body);
+                assertTrue(body.contains("\"scannedSpans\":"), body);
+            }
         }
     }
 
@@ -449,7 +492,7 @@ class HttpReadoutTest {
 
             // 每个页面都引同一份资源 —— 复制就会漂移
             for (final String page : new String[]{"/", "/traces.html", "/logs.html",
-                    "/metrics.html", "/self.html", "/self-log.html"}) {
+                    "/metrics.html", "/topology.html", "/self.html", "/self-log.html"}) {
                 final String body = get(port, page).body;
                 assertTrue(body.contains("href=\"app.css\""), page + " 要引 app.css");
                 assertTrue(body.contains("src=\"app.js\""), page + " 要引 app.js");
@@ -508,6 +551,9 @@ class HttpReadoutTest {
                 "queues", "rings", "config", "msg", "s-spans", "tiles-note"});
             required.put("/self-log.html", new String[]{
                 "self-log-body", "self-log-msg", "wrap"});
+            required.put("/topology.html", new String[]{
+                "topology", "topology-msg", "topology-count", "topology-table", "topology-note",
+                "wrap"});
 
             for (final java.util.Map.Entry<String, String[]> page : required.entrySet()) {
                 final String body = get(port, page.getKey()).body;
@@ -578,7 +624,8 @@ class HttpReadoutTest {
         try (LocalStore store = storeWithOneSpan(dataDir);
              HttpReadout readout = start(dataDir, 0, false, null, store)) {
             final int port = readout.getActualPort();
-            for (final String page : new String[]{"/", "/self.html", "/self-log.html", "/app.js"}) {
+            for (final String page : new String[]{
+                    "/", "/self.html", "/self-log.html", "/topology.html", "/app.js"}) {
                 final Response r = call(port, page, "POST", null, null);
                 assertEquals(405, r.status, page + " 应当被拒");
                 assertEquals("GET, HEAD", r.allow, page + " 的 405 要说明允许什么");
@@ -647,7 +694,7 @@ class HttpReadoutTest {
             final int port = readout.getActualPort();
             // 已落地的端点：/、/api/summary、/api/traces、/api/logs、/api/metrics、/api/self-log、/metrics
             for (final String path : new String[]{"/", "/api/summary", "/api/traces", "/api/logs",
-                    "/api/metrics", "/api/self-log", "/metrics"}) {
+                    "/api/metrics", "/api/self-log", "/api/topology", "/metrics"}) {
                 assertEquals(200, get(port, path).status, path + " 用 GET 应当可达");
             }
             // 永远不提供的端点必须 404 而不是 200 空壳 —— 否则会以为它通了。
@@ -1122,7 +1169,7 @@ class HttpReadoutTest {
             assertTrue(js.contains("sessionStorage"), "token 只能放 sessionStorage");
             assertFalse(js.contains("?token="), "token 绝不能进 URL");
             for (final String page : new String[]{"/", "/traces.html", "/logs.html",
-                    "/metrics.html", "/self.html", "/self-log.html"}) {
+                    "/metrics.html", "/topology.html", "/self.html", "/self-log.html"}) {
                 assertFalse(get(port, page).body.contains("demo-span"),
                         page + " 本身不含数据 —— 数据由 JS 带头去取");
             }

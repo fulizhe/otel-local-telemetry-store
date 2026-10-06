@@ -215,6 +215,44 @@ class ReadoutQueriesTest {
         assertEquals(LocalStoreConfig.DEFAULT_AUTH_ENABLED, c.isAuthEnabled());
     }
 
+    @Test
+    @DisplayName("拓扑聚合是纯函数：service→component 边、父不在结果集时退化、错误计数")
+    void topologyAggregationIsPureAndHonest() {
+        final Map<Long, String> resources = new LinkedHashMap<Long, String>();
+        resources.put(Long.valueOf(1L), "service.name=s:demo");
+
+        final List<Map<String, Object>> rows = new java.util.ArrayList<Map<String, Object>>();
+        rows.add(topoRow("s1", "", 1, "io.opentelemetry.tomcat", 1L, 0, 1000L, 5000L, "GET /x"));
+        rows.add(topoRow("s2", "s1", 2, "io.opentelemetry.jdbc", 1L, 2, 1000L, 3000L, "SELECT 1"));
+        rows.add(topoRow("s3", "missing", 2, "io.opentelemetry.jedis-3.0", 1L, 0, 0L, 0L, "SET"));
+
+        final Map<String, Object> out = ReadoutQueries.aggregateTopology(rows, resources, 3);
+        final List<?> nodes = (List<?>) out.get("nodes");
+        final List<?> edges = (List<?>) out.get("edges");
+        assertEquals(3, nodes.size(), "service + jdbc + jedis：" + nodes);
+        assertEquals(2, edges.size(), "service→jdbc 与 service→jedis：" + edges);
+        assertEquals(Integer.valueOf(3), out.get("scannedSpans"));
+        // 服务名从 Resource 文本里解析出来（带类型前缀 s:）
+        assertTrue(out.toString().contains("service:demo"), out.toString());
+        assertFalse(out.toString().contains("scope:unknown"), "scopeName 都在，不该有未标注：" + out);
+    }
+
+    private static Map<String, Object> topoRow(final String spanId, final String parentSpanId,
+            final int kind, final String scope, final long resourceId, final int statusCode,
+            final long start, final long end, final String name) {
+        final Map<String, Object> m = new LinkedHashMap<String, Object>();
+        m.put("spanId", spanId);
+        m.put("parentSpanId", parentSpanId);
+        m.put("kind", Integer.valueOf(kind));
+        m.put("scopeName", scope);
+        m.put("resourceId", Long.valueOf(resourceId));
+        m.put("statusCode", Integer.valueOf(statusCode));
+        m.put("startTime", Long.valueOf(start));
+        m.put("endTime", Long.valueOf(end));
+        m.put("name", name);
+        return m;
+    }
+
     private static java.util.function.Supplier<Map<String, Object>> constant(final Map<String, Object> value) {
         return new java.util.function.Supplier<Map<String, Object>>() {
             @Override
