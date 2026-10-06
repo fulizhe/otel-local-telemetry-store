@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.fulizhe.otelstore.core.config.LocalStoreConfig;
+import io.opentelemetry.sdk.autoconfigure.spi.ConfigProperties;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -142,5 +143,73 @@ class LocalStoreCustomizerProviderTest {
         assertTrue(logs, "漏了 sdk.logs");
         assertTrue(runtime, "漏了 runtime-telemetry");
         assertTrue(exporters, "漏了 exporters");
+    }
+
+    /**
+     * agent 侧配置键必须带 {@code otel.localstore.} 前缀。
+     *
+     * <p>退役的写法传的是裸后缀（{@code props.getString("dataDir")}），而 OTel 的
+     * {@code ConfigProperties.getString} 只做"小写 + {@code '-'→'.'}"、**不补前缀** ——
+     * 于是取到的一直是 null，整个 {@code otel.localstore.*} 命名空间静默失效、全部回落默认值。
+     * 真机探针就是这样发现的。这条把"用带前缀的键去取"钉住。
+     */
+    @Test
+    @DisplayName("agent 侧配置用 otel.localstore.* 前缀读（裸后缀永远取不到）")
+    void agentConfigIsReadWithTheOtelLocalstorePrefix(@TempDir final File dataDir) {
+        final Map<String, String> values = new LinkedHashMap<String, String>();
+        values.put(LocalStoreConfig.PREFIX + "dataDir", dataDir.getAbsolutePath());
+        // 环必须给小值：走默认的 256 MiB 会在临时目录里建两个大文件
+        values.put(LocalStoreConfig.PREFIX + "capped.traces.bytes", "1048576");
+        values.put(LocalStoreConfig.PREFIX + "capped.logs.bytes", "1048576");
+
+        try (TapHub hub = LocalStoreCustomizerProvider.create(propsOf(values))) {
+            assertEquals(dataDir.getAbsolutePath(), hub.config().getDataDir(),
+                    "provider 必须用带前缀的键从 ConfigProperties 取值，否则就是默认 dataDir");
+        }
+    }
+
+    /** 最小 {@link ConfigProperties} 桩：只按传入的精确键取值，其余一律 null / 空。 */
+    private static ConfigProperties propsOf(final Map<String, String> values) {
+        return new ConfigProperties() {
+            @Override
+            public String getString(final String name) {
+                return values.get(name);
+            }
+
+            @Override
+            public Boolean getBoolean(final String name) {
+                return null;
+            }
+
+            @Override
+            public Integer getInt(final String name) {
+                return null;
+            }
+
+            @Override
+            public Long getLong(final String name) {
+                return null;
+            }
+
+            @Override
+            public Double getDouble(final String name) {
+                return null;
+            }
+
+            @Override
+            public java.time.Duration getDuration(final String name) {
+                return null;
+            }
+
+            @Override
+            public List<String> getList(final String name) {
+                return java.util.Collections.emptyList();
+            }
+
+            @Override
+            public Map<String, String> getMap(final String name) {
+                return java.util.Collections.emptyMap();
+            }
+        };
     }
 }

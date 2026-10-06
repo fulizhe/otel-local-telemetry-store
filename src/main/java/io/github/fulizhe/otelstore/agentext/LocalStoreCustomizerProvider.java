@@ -195,7 +195,11 @@ public final class LocalStoreCustomizerProvider implements AutoConfigurationCust
         final Map<String, String> collected = new LinkedHashMap<String, String>();
         final String[] keys = LocalStoreConfig.knownKeySuffixes();
         for (int i = 0; i < keys.length; i++) {
-            final String raw = props == null ? null : props.getString(keys[i]);
+            // 键要带 otel.localstore. 前缀：OTel 的 ConfigProperties.getString 只做
+            // "小写 + '-'→'.'"，**不会**替我们补前缀。传裸后缀（旧实现）取到的一直是 null，
+            // 于是整个 otel.localstore.* 命名空间在 agent 侧静默失效、全部回落默认值。
+            final String raw = props == null ? null
+                    : props.getString(LocalStoreConfig.PREFIX + keys[i]);
             if (raw != null) {
                 collected.put(keys[i], raw);
             }
