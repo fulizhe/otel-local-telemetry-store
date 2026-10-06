@@ -129,7 +129,9 @@ class RecordQueueTest {
             assertTrue(q.droppedCount() > 0, "大部分应被丢弃");
             assertEquals(accepted, (int) q.offeredCount(), "入队数 = 接受数 + 丢弃数");
             assertEquals(200, accepted + (int) q.droppedCount());
-            assertFalse(q.backlog() < 8, "队列容量应被占满");
+            // 不断言 backlog：drainer 是**批量**拉（drainTo 到本地 batch 再逐条 accept），
+            // 它可能刚好在断言前把整个队列抽进 batch、人阻塞在 sink 里 —— 那时 queue.size()=0，
+            // 但记录并没有丢，只是"在 drainer 手里"。backlog 天生不确定，能证明"满过"的是 dropped>0。
         } finally {
             gate.countDown();
             q.close();
