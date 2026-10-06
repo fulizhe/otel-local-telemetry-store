@@ -490,6 +490,12 @@ class HttpReadoutTest {
                     String.valueOf(js.contentType));
             assertTrue(js.body.contains("Otl"), js.body);
 
+            // 唯一随读口发的三方前端库（ADR-8）：本地发，拓扑页能拿到
+            final Response echarts = get(port, "/echarts.min.js");
+            assertEquals(200, echarts.status, "拓扑页要能拿到本地 echarts");
+            assertTrue(echarts.contentType.startsWith("application/javascript"),
+                    String.valueOf(echarts.contentType));
+
             // 每个页面都引同一份资源 —— 复制就会漂移
             for (final String page : new String[]{"/", "/traces.html", "/logs.html",
                     "/metrics.html", "/topology.html", "/self.html", "/self-log.html"}) {

@@ -773,6 +773,8 @@ private void servePage(final HttpExchange exchange, final String asset) throws I
         m.put("/self-log.html", "self-log.html");
         m.put("/app.css", "app.css");
         m.put("/app.js", "app.js");
+        // 唯一随读口发的三方前端库（ADR-8）：本地发、不走 CDN。只在拓扑页引。
+        m.put("/echarts.min.js", "echarts.min.js");
         PAGE_ASSETS = java.util.Collections.unmodifiableMap(m);
     }
 

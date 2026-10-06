@@ -27,7 +27,7 @@
 <div class="wrap" id="wrap">
   <div class="card">
     <h2>调用关系图 <span class="pill" id="topology-msg">加载中…</span></h2>
-    <div id="topology" style="margin-top:10px"><span style="color:var(--dim)">–</span></div>
+    <div id="topology" style="margin-top:10px;height:520px"><span style="color:var(--dim)">–</span></div>
     <div class="foot">
       <b>方形</b>是本服务（Resource 的 <code>service.name</code>），<b>圆形</b>是外部组件
       （CLIENT/PRODUCER span 的 <code>scopeName</code>）。边按父 span → 子 span 聚合成
@@ -50,6 +50,7 @@
   </div>
 </div>
 
+<script src="echarts.min.js"></script>
 <script src="app.js"></script>
 <script>Otl.start('topology', ['topology']);</script>
 </body>

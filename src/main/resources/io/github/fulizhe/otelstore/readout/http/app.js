@@ -993,12 +993,97 @@ var Otl = (function () {
     }
     if (!has('topology')) { return; }
     if (!edges.length) {
+      if (tChart) { tChart.dispose(); tChart = null; }
       $('topology').innerHTML = '<div class="foot">最近 ' + num(d.scannedSpans)
         + ' 条 span 里没有跨组件的调用 —— 先打一次带外部依赖的请求'
         + '（demo：<code>/demo/deps/all</code>）。</div>';
       return;
     }
-    $('topology').innerHTML = topologySvg(nodes, edges);
+    // 拓扑页带 echarts 就用它画（观感好、可缩放拖动）；没有就回落到内联 SVG，不至于空白。
+    if (typeof echarts !== 'undefined') {
+      topologyChart(nodes, edges);
+    } else {
+      $('topology').innerHTML = topologySvg(nodes, edges);
+    }
+  }
+
+  /** ECharts 实例；随刷新复用（setOption 而不是重建）。echarts 不在时恒为 null。 */
+  var tChart = null;
+
+  /** 用 ECharts 的 graph 画：本服务在左、组件在右固定布局，箭头从左到右，边色随错误率。 */
+  function topologyChart(nodes, edges) {
+    var H = 520;
+    var byId = {};
+    nodes.forEach(function (n) { byId[n.id] = n; });
+    var svc = nodes.filter(function (n) { return n.type === 'service'; });
+    var comps = nodes.filter(function (n) { return n.type !== 'service'; });
+    var posOf = {};
+    svc.forEach(function (n, i) {
+      posOf[n.id] = { x: 120, y: svc.length <= 1 ? H / 2 : 60 + i * ((H - 120) / (svc.length - 1)) };
+    });
+    comps.forEach(function (n, i) {
+      posOf[n.id] = { x: 640, y: comps.length <= 1 ? H / 2 : 50 + i * ((H - 100) / (comps.length - 1)) };
+    });
+
+    var data = nodes.map(function (n) {
+      var p = posOf[n.id] || { x: 380, y: H / 2 };
+      var isSvc = n.type === 'service';
+      return {
+        id: n.id, name: nodeLabel(n), x: p.x, y: p.y, _n: n,
+        symbol: isSvc ? 'roundRect' : 'circle',
+        symbolSize: isSvc ? [168, 54] : 56,
+        itemStyle: {
+          color: '#1c2128', borderColor: isSvc ? '#3fb950' : '#5c6673',
+          borderWidth: isSvc ? 2 : 1.5
+        },
+        label: {
+          show: true, color: '#e6e8ee', fontSize: 12,
+          position: isSvc ? 'inside' : 'bottom', distance: 6
+        }
+      };
+    });
+    var links = edges.map(function (e) {
+      return {
+        source: e.from, target: e.to, value: e.calls, _e: e,
+        lineStyle: {
+          color: edgeColor(edgeRate(e)), width: Math.min(7, 1.2 + Math.log(e.calls + 1)),
+          opacity: 0.9, curveness: 0.08
+        },
+        label: { show: e.calls > 0, formatter: String(e.calls), color: '#9aa3b2', fontSize: 10 }
+      };
+    });
+
+    if (!tChart) {
+      tChart = echarts.init($('topology'));
+      window.addEventListener('resize', function () { if (tChart) { tChart.resize(); } });
+    }
+    tChart.setOption({
+      backgroundColor: 'transparent',
+      tooltip: {
+        confine: true,
+        formatter: function (p) {
+          if (p.dataType === 'edge') {
+            var e = p.data._e;
+            return '<b>' + esc(nodeLabel(byId[e.from])) + ' → ' + esc(nodeLabel(byId[e.to])) + '</b>'
+              + '<br>调用 ' + e.calls + ' · 错误 ' + e.errors
+              + '<br>平均 ' + fmtNum(round(e.avgMs)) + ' ms · 最大 ' + fmtNum(round(e.maxMs)) + ' ms'
+              + ((e.names && e.names.length)
+                  ? '<br>操作：' + esc(clip(e.names.join('；'), 120)) : '');
+          }
+          var n = p.data._n;
+          return '<b>' + esc(nodeLabel(n)) + '</b><br>'
+            + (n.type === 'service' ? '本服务' : '外部组件');
+        }
+      },
+      series: [{
+        type: 'graph', layout: 'none', roam: true, draggable: true,
+        label: { show: true },
+        edgeSymbol: ['none', 'arrow'], edgeSymbolSize: 8,
+        edgeLabel: { show: true, color: '#9aa3b2', fontSize: 10 },
+        lineStyle: { color: '#8a94a0', width: 1.5, opacity: 0.7, curveness: 0.08 },
+        data: data, links: links
+      }]
+    }, true);
   }
 
   /** 环状布局：服务节点居中竖直排，组件环绕；边粗 ∝ 调用量、边色 ∝ 错误率。 */
