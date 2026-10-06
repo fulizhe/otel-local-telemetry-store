@@ -91,6 +91,17 @@ svg.chart .dot { stroke: var(--panel); stroke-width: 1; }
 .legend .item { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); }
 .legend .swatch { width: 10px; height: 3px; border-radius: 2px; flex: none; }
 
+/* 调用链瀑布（ADR-6 第十五节）。与 svg.chart 同源：文本、可随 CSS 缩放、零依赖 */
+svg.waterfall { width: 100%; height: auto; display: block; background: var(--panel-2);
+                border: 1px solid var(--line); border-radius: 6px; }
+svg.waterfall .axis-text { fill: var(--dim); font-size: 10px; }
+svg.waterfall .wf-label { fill: var(--fg); font-size: 11px; }
+svg.waterfall .wf-warn { fill: var(--warn); font-size: 10px; }
+/* 单 span 时画不出链，用一行文字列出来（**不是**画一条横线） */
+.wf-single { display: flex; align-items: center; gap: 8px; padding: 8px 4px;
+             border-bottom: 1px solid var(--line); cursor: pointer; }
+.wf-single .wf-bar { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+
 /* 索引页的入口卡片 */
 .links { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
 .links a { display: block; text-decoration: none; color: inherit;

@@ -433,6 +433,24 @@ var Otl = (function () {
         + '<div id="detail-body"></div></div></div>';
       document.body.insertBefore(ov, document.body.firstChild);
     }
+    // 调用链瀑布是**第二个**弹框（ADR-6 第十五节）。与详情弹框分开两层：
+    // 从瀑布里点一条 span 要能叠一个详情弹框上去，而关闭时先关最上面那层。
+    if (!has('waterfall-overlay')) {
+      var wf = document.createElement('div');
+      wf.className = 'overlay';
+      wf.id = 'waterfall-overlay';
+      wf.style.display = 'none';
+      wf.setAttribute('onclick', 'if(event.target===this)Otl.closeWaterfall();');
+      wf.innerHTML =
+        '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="waterfall-title">'
+        + '<div class="modal-head"><h2 id="waterfall-title">调用链</h2>'
+        + '<span class="pill" id="waterfall-kind"></span><span style="flex:1"></span>'
+        + '<button onclick="Otl.closeWaterfall()">关闭 <span style="color:var(--dim)">Esc</span></button>'
+        + '</div>'
+        + '<div class="modal-body"><div id="waterfall-msg" class="foot"></div>'
+        + '<div id="waterfall-body"></div></div></div>';
+      document.body.insertBefore(wf, document.body.firstChild);
+    }
     if (!has('auth-card')) {
       var ac = document.createElement('div');
       ac.className = 'card';
@@ -453,7 +471,13 @@ var Otl = (function () {
       wrap.insertBefore(ac, wrap.firstChild);
     }
     document.addEventListener('keydown', function (ev) {
-      if (ev.key === 'Escape') { closeDetail(); }
+      // Esc **先关最上面那层**：从瀑布里点开的那条详情叠在它上面。
+      // 一上来就关瀑布的话，用户按 Esc 会以为"把详情关了"，实际两层一起没了。
+      if (ev.key === 'Escape') {
+        var detailOpen = has('detail-overlay') && $('detail-overlay').style.display === 'flex';
+        if (detailOpen) { closeDetail(); return; }
+        closeWaterfall();
+      }
     });
   }
 
@@ -492,13 +516,21 @@ var Otl = (function () {
   }
 
   function renderDetail(d, isSpan) {
-    var head = '<table><tbody>' + kv([
-      ['trace_id', d.traceId], ['span_id', d.spanId],
-      isSpan ? ['parent_span_id', d.parentSpanId]
-             : ['severity', d.severityText || severityName(d.severityNumber)],
-      ['scope', (d.scopeName || '') + (d.scopeVersion ? ' ' + d.scopeVersion : '')],
-      ['资源', d.resource]
-    ]) + '</tbody></table>';
+    // trace_id 做成可点的：从详情也能进瀑布（ADR-6 第十五节），不用退回列表页再点一次。
+    // 这里不走 kv() —— 它会转义值，而我们要的是一段链接。
+    var traceCell = d.traceId
+      ? '<a href="#" data-trace="' + esc(d.traceId) + '" style="cursor:pointer">'
+        + esc(d.traceId) + ' → 看调用链</a>'
+      : '–';
+    var head = '<table><tbody>'
+      + '<tr><td class="k">trace_id</td><td>' + traceCell + '</td></tr>'
+      + kv([
+        ['span_id', d.spanId],
+        isSpan ? ['parent_span_id', d.parentSpanId]
+               : ['severity', d.severityText || severityName(d.severityNumber)],
+        ['scope', (d.scopeName || '') + (d.scopeVersion ? ' ' + d.scopeVersion : '')],
+        ['资源', d.resource]
+      ]) + '</tbody></table>';
 
     var p = d.payload || {};
     var payloadHtml;
@@ -517,6 +549,16 @@ var Otl = (function () {
 
     $('detail-msg').innerHTML = '';
     $('detail-body').innerHTML = head + '<h3>属性</h3>' + payloadHtml;
+    // 详情里的 trace 链接也要能进瀑布。**只挂一次**：renderDetail 每次都会跑，
+    // 每次都 addEventListener 会让点一次开好几个弹框。
+    var db = $('detail-body');
+    if (db && !db.__traceWired) {
+      db.__traceWired = true;
+      db.addEventListener('click', function (ev) {
+        var a = ev.target.closest ? ev.target.closest('a[data-trace]') : null;
+        if (a) { ev.preventDefault(); openWaterfall(a.getAttribute('data-trace')); }
+      });
+    }
   }
 
   /**
@@ -652,17 +694,21 @@ var Otl = (function () {
    * 事件委托（tbody 上一个监听 + data-trace）两种问题都没有。
    */
   function traceLink(id) {
-    return ' <a href="#" data-trace="' + esc(id) + '" title="只看这个 trace 的 span 与日志"'
+    return ' <a href="#" data-trace="' + esc(id) + '" title="看这条 trace 的调用链瀑布"'
       + ' style="color:var(--dim);cursor:pointer">trace</a>';
   }
 
+
   /**
-   * 点 trace 链接 → **跳到 span 页并带上 traceId**。
+   * 点 trace 链接 → **开调用链瀑布弹框**（ADR-6 第十五节）。
    *
-   * <p>拆成多页之后这不是可有可无的方便：span 与日志在两个页面上，
-   * 跨页筛选只能靠 URL 携带。
+   * <p>变化：原来这里是"跳到 span 页并带上 traceId"（一列一行）。
+   * 现在直接在弹框里画整条链 —— 列表页与日志页的 trace 链接都走这里。
+   *
+   * <p>带 traceId 跳转到 span 页这条路仍然保留（页面上的 trace_id 输入框用它）：
+   * 瀑布是"看形状"，筛选是"逐条看字段"，两件事。
    */
-  function pickTrace(id) { location.href = 'traces.html?traceId=' + encodeURIComponent(id); }
+  function pickTrace(id) { openWaterfall(id); }
 
   function loadTraces() {
     var q = currentTrace() ? '?limit=20&traceId=' + encodeURIComponent(currentTrace()) : '?limit=20';
@@ -972,9 +1018,292 @@ var Otl = (function () {
     }
   }
 
+  // ---------------- 调用链瀑布（ADR-6 第十五节）
+
+  /**
+   * span 的 kind（OTel SpanKind 的 int）→ 名字。
+   *
+   * <p><b>与 {@link kindName} 不是一个东西</b>：那个是**指标**的形态（Gauge/Sum/Histogram），
+   * 这个是 **span 的角色**。两个都叫 kind，混用会把指标页的说明串到瀑布上。
+   */
+  function spanKindName(k) {
+    if (k === 1) { return 'SERVER'; }
+    if (k === 2) { return 'CLIENT'; }
+    if (k === 3) { return 'PRODUCER'; }
+    if (k === 4) { return 'CONSUMER'; }
+    return 'INTERNAL';
+  }
+
+  /** 按 kind 上色 —— 这是 SkyWalking 拓扑图的视觉语言：一眼看出进程边界在哪。 */
+  var KIND_COLORS = {
+    SERVER: '#4c9aff', CLIENT: '#3fb950', PRODUCER: '#d29922',
+    CONSUMER: '#a371f7', INTERNAL: '#8b949e'
+  };
+
+  /**
+   * 仪表化来源（scopeName）的配色。**与 kind 那套分开**：同一个来源可以是 CLIENT 也可以是
+   * SERVER，两套颜色混在一起会读成"同色就是同一件事"。
+   */
+  var SCOPE_COLORS = ['#f0883e', '#2ea043', '#8957e5', '#1f6feb', '#db6d28',
+                      '#39c5cf', '#bf8700', '#6e7681'];
+
+  /** 深度上限。超过就压平缩进并说明 —— 一直缩下去会把名字挤没。 */
+  var WF_MAX_DEPTH = 12;
+
+  function closeWaterfall() {
+    if (!has('waterfall-overlay')) { return; }
+    $('waterfall-overlay').style.display = 'none';
+    document.body.style.overflow = '';
+  }
+
+  /**
+   * 打开某条 trace 的瀑布。
+   *
+   * <p>取 {@code limit=200}（列表端点的上限）：**拿到多少画多少**。
+   * 拿满了就说明库里这条 trace 可能比画出来的多 —— 这一点会写在图上，不静默（#21）。
+   */
+  function openWaterfall(traceId) {
+    if (!traceId || !has('waterfall-overlay')) { return; }
+    $('waterfall-overlay').style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+    $('waterfall-body').innerHTML = '';
+    $('waterfall-kind').textContent = clip(traceId, 12) + '…';
+    $('waterfall-msg').textContent = '加载中…';
+    fetch('/api/traces?limit=' + WF_LIMIT + '&traceId=' + encodeURIComponent(traceId),
+          { headers: headers(), cache: 'no-store' })
+      .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
+      .then(function (res) { renderWaterfall(traceId, res); })
+      .catch(function (e) {
+        $('waterfall-msg').innerHTML = '<span class="err">读调用链失败：' + esc(e.message) + '</span>';
+      });
+  }
+
+  /** 与后端列表端点的上限一致。写成常量是为了"拿满了"这个判断有个唯一的来源。 */
+  var WF_LIMIT = 200;
+
+  function renderWaterfall(traceId, res) {
+    if (res.s === 401) { unauth(); closeWaterfall(); return; }
+    if (res.s !== 200 || !Array.isArray(res.d)) {
+      $('waterfall-msg').innerHTML = '<span class="err">' + esc(errorText(res)) + '</span>';
+      return;
+    }
+    var spans = res.d;
+
+    // ---- 三条"不编"的纪律之一：没数据 / 只有一条，明说画不出，不画一条横线
+    if (spans.length === 0) {
+      $('waterfall-msg').textContent =
+        '这条 trace 没有 span —— 可能是已被行数水位淘汰，或采集期已过。';
+      return;
+    }
+    if (spans.length === 1) {
+      $('waterfall-msg').innerHTML = '这条 trace 只有 <b>1 条</b> span，<b>画不出调用链形状</b>。'
+        + '下面仍然列出它 —— 点开可以看它的属性与事件。';
+      $('waterfall-body').innerHTML = '<div class="wf-single" data-detail="'
+        + esc(spans[0].id) + '" data-kind="span" title="点开看详情">'
+        + '<span class="wf-bar" style="background:' + kindColor(spans[0].kind) + '"></span>'
+        + esc(spans[0].name || '(无名)')
+        + ' <span style="color:var(--dim)">' + esc(spanKindName(spans[0].kind)) + ' · '
+        + esc(clip(spans[0].scopeName, 24)) + ' · ' + esc(dur(spans[0].startTime, spans[0].endTime))
+        + '</span></div>';
+      wireWaterfallClicks();
+      return;
+    }
+
+    // ---- 建树：父不在结果集里 → 仍当根，但**记下来**，不静默改挂
+    var byId = {};
+    spans.forEach(function (s) { if (s.spanId) { byId[s.spanId] = s; } });
+    var children = {};
+    var roots = [];
+    var orphan = {};
+    var byStart = function (a, b) { return (a.startTime || 0) - (b.startTime || 0); };
+    spans.forEach(function (s) {
+      var p = s.parentSpanId;
+      var noParent = !p || /^0+$/.test(p);
+      if (noParent) { roots.push(s); return; }
+      if (!byId[p]) {
+        // 父 span 被行数水位淘汰或被上限截断了。**不往上找一个看起来差不多的祖先挂上去** ——
+        // 静默改挂出来的图看起来是对的，而那正是最坏的一种错。
+        orphan[s.spanId] = true;
+        roots.push(s);
+        return;
+      }
+      (children[p] = children[p] || []).push(s);
+    });
+    roots.sort(byStart);
+    Object.keys(children).forEach(function (k) { children[k].sort(byStart); });
+
+    var visited = {};
+    var rows = [];
+    var depthClipped = false;
+    function walk(s, depth) {
+      if (visited[s.spanId]) { return; }   // 防成环（父指向自己的坏数据）时无限递归
+      visited[s.spanId] = true;
+      rows.push({ s: s, depth: depth, orphan: !!orphan[s.spanId] });
+      var kids = children[s.spanId] || [];
+      for (var i = 0; i < kids.length; i++) {
+        if (depth + 1 > WF_MAX_DEPTH) { depthClipped = true; }
+        walk(kids[i], Math.min(depth + 1, WF_MAX_DEPTH));
+      }
+    }
+    roots.forEach(function (r) { walk(r, 0); });
+    // 成环或断链导致没被走到的 span：也要画出来（当根 + 标明），**不能悄悄丢**
+    spans.forEach(function (s) {
+      if (s.spanId && !visited[s.spanId]) {
+        orphan[s.spanId] = true;
+        walk(s, 0);
+      }
+    });
+
+    var truncated = spans.length >= WF_LIMIT;
+    var shown = rows;
+
+    // ---- 时间轴范围
+    var tMin = Infinity, tMax = -Infinity;
+    spans.forEach(function (s) {
+      if (typeof s.startTime === 'number') { tMin = Math.min(tMin, s.startTime); }
+      if (typeof s.endTime === 'number') { tMax = Math.max(tMax, s.endTime); }
+    });
+    if (!isFinite(tMin) || !isFinite(tMax)) { tMin = 0; tMax = 1; }
+    if (tMax <= tMin) { tMax = tMin + 1000000; }   // 全零宽也要能画，别除以 0
+
+    // ---- 几何。**变量名刻意与趋势图那套（W/H/L/R/T/B、px、py）不同**：
+    // 那些是 `renderChart` 的局部量，重名会让"图突然画歪"这种问题极难定位（本仓库踩过）。
+    var VW = 980;
+    var LABEL_W = 340;
+    var PAD_R = 16;
+    var PAD_T = 30;
+    var PAD_B = 24;
+    var ROW_H = 22;
+    var BAR_H = 13;
+    var TL0 = LABEL_W;
+    var TL1 = VW - PAD_R;
+    var VH = PAD_T + shown.length * ROW_H + PAD_B;
+    function tx(nanos) { return TL0 + (nanos - tMin) / (tMax - tMin) * (TL1 - TL0); }
+
+    // ---- 来源配色：同一来源贯穿一致
+    var scopeColor = {};
+    var scopeOrder = [];
+    spans.forEach(function (s) {
+      var sc = s.scopeName || '（无来源）';
+      if (!scopeColor[sc]) {
+        scopeColor[sc] = SCOPE_COLORS[scopeOrder.length % SCOPE_COLORS.length];
+        scopeOrder.push(sc);
+      }
+    });
+
+    var out = [];
+    out.push('<svg class="waterfall" viewBox="0 0 ' + VW + ' ' + VH + '" role="img" width="100%">');
+
+    // 时间轴：起 / 中 / 止 三个刻度
+    var ticks = [tMin, (tMin + tMax) / 2, tMax];
+    for (var ti = 0; ti < ticks.length; ti++) {
+      var txv = tx(ticks[ti]);
+      out.push('<line x1="' + txv + '" y1="' + (PAD_T - 8) + '" x2="' + txv + '" y2="'
+        + (VH - PAD_B + 4) + '" stroke="#30363d" stroke-width="1"/>');
+      out.push('<text class="axis-text" x="' + txv + '" y="' + (PAD_T - 12)
+        + '" text-anchor="middle">' + esc(clockMs(ticks[ti])) + '</text>');
+    }
+
+    shown.forEach(function (r, i) {
+      var s = r.s;
+      var y = PAD_T + i * ROW_H;
+      var kn = spanKindName(s.kind);
+      var color = KIND_COLORS[kn] || KIND_COLORS.INTERNAL;
+      var x0 = tx(s.startTime);
+      var x1 = tx(Math.max(s.endTime || s.startTime, s.startTime));
+      var w = Math.max(2, x1 - x0);
+      var indent = 6 + r.depth * 11;
+      var sc = s.scopeName || '（无来源）';
+
+      // 标签列：来源色块 + 缩进后的名字
+      out.push('<rect x="' + indent + '" y="' + (y + 5) + '" width="8" height="8" rx="1" fill="'
+        + esc(scopeColor[sc]) + '"/>');
+      var nameChars = Math.max(6, Math.floor((LABEL_W - indent - 26) / 7));
+      out.push('<text class="wf-label" x="' + (indent + 13) + '" y="' + (y + 13) + '">'
+        + esc(clip(s.name || '(无名)', nameChars)) + '</text>');
+
+      // 时间轴上的条，**按 kind 上色**
+      out.push('<rect class="wf-bar" x="' + x0 + '" y="' + (y + 4) + '" width="' + w
+        + '" height="' + BAR_H + '" rx="2" fill="' + color + '"'
+        + ' data-detail="' + esc(s.id) + '" data-kind="span" style="cursor:pointer">'
+        + '<title>' + esc(wfTitle(s, kn, sc)) + '</title></rect>');
+
+      // 孤儿要写在图里，而不是只在标题里 —— 标题要悬浮才看得到
+      if (r.orphan) {
+        out.push('<text class="wf-warn" x="' + Math.min(TL1 + 4, VW - 6) + '" y="' + (y + 13)
+          + '" text-anchor="end">父 span 不在库里</text>');
+      }
+    });
+    out.push('</svg>');
+
+    // ---- 图例：kind 一套、来源一套，各写清自己在说什么
+    var kindLegend = ['SERVER', 'CLIENT', 'PRODUCER', 'CONSUMER', 'INTERNAL'].map(function (k) {
+      return '<span class="item"><span class="swatch" style="background:'
+        + KIND_COLORS[k] + '"></span>' + k + '</span>';
+    }).join('');
+    var scopeLegend = scopeOrder.map(function (sc) {
+      return '<span class="item"><span class="swatch" style="background:'
+        + esc(scopeColor[sc]) + '"></span>' + esc(sc) + '</span>';
+    }).join('');
+
+    var notes = [];
+    if (truncated) {
+      notes.push('<b>只画了前 ' + WF_LIMIT + ' 条</b> —— 这条 trace 在库里可能还有更多 span。');
+    }
+    if (depthClipped) {
+      notes.push('<b>缩进到第 ' + WF_MAX_DEPTH + ' 层就封顶了</b> —— 更深的子链在图上与它同层。');
+    }
+
+    $('waterfall-msg').innerHTML = '共 <b>' + spans.length + '</b> 条 span，'
+      + '时间跨度 ' + esc(dur(tMin, tMax)) + '。点任一条看详情。';
+    $('waterfall-body').innerHTML = out.join('')
+      + '<div class="legend"><span style="color:var(--dim)">kind：</span>' + kindLegend
+      + '<span style="color:var(--dim);margin-left:12px">来源：</span>' + scopeLegend + '</div>'
+      + (notes.length ? '<div class="note">' + notes.join(' ') + '</div>' : '')
+      + '<div class="foot">按 <code>scopeName</code> 分组、按 span 的 <code>kind</code> 上色；'
+      + '横轴是时间，缩进是父子深度。</div>';
+
+    wireWaterfallClicks();
+  }
+
+  /** 条的悬浮提示：一条 span 该说的都在这里 —— 名字、角色、来源、耗时、起止。 */
+  function wfTitle(s, kn, scope) {
+    return (s.name || '(无名)') + '\n'
+      + 'kind: ' + kn + '\n'
+      + 'scope: ' + scope + (s.scopeVersion ? ' ' + s.scopeVersion : '') + '\n'
+      + '耗时: ' + dur(s.startTime, s.endTime) + '\n'
+      + '开始: ' + ts(s.startTime) + '\n'
+      + 'span_id: ' + (s.spanId || '') + '\n'
+      + 'parent: ' + (s.parentSpanId || '(根)');
+  }
+
+  function kindColor(k) {
+    return KIND_COLORS[spanKindName(k)] || KIND_COLORS.INTERNAL;
+  }
+
+  /** epoch 纳秒 → 时:分:秒.毫秒。调用链很短，只看"秒"分不开先后。 */
+  function clockMs(nanos) {
+    var d = new Date(Math.round(nanos / 1000000));
+    if (isNaN(d.getTime())) { return '–'; }
+    var p = function (n, w) { return ('000' + n).slice(-w); };
+    return p(d.getHours(), 2) + ':' + p(d.getMinutes(), 2) + ':' + p(d.getSeconds(), 2)
+      + '.' + p(d.getMilliseconds(), 3);
+  }
+
+  /** 点瀑布里任一条 → **复用**详情弹框（不新造第二个详情弹框）。 */
+  function wireWaterfallClicks() {
+    var body = $('waterfall-body');
+    if (!body) { return; }
+    body.addEventListener('click', function (ev) {
+      var el = ev.target.closest ? ev.target.closest('[data-detail]') : null;
+      if (el) { openDetail(el.getAttribute('data-detail'), el.getAttribute('data-kind') || 'span'); }
+    });
+  }
+
   return {
     start: start, saveToken: saveToken, clearToken: clearToken,
     openDetail: openDetail, closeDetail: closeDetail,
+    openWaterfall: openWaterfall, closeWaterfall: closeWaterfall,
     refresh: runReload,
     esc: esc, clip: clip
   };
