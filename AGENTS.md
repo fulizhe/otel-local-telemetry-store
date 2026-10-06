@@ -5,10 +5,10 @@
 **otel-local-telemetry-store** —— 把 OpenTelemetry 的 traces / logs / metrics 留在应用自己的进程内。
 不发给任何远端，不需要第二套 agent，存储有界、降级可控。
 
-当前处于 **Phase 5 第六段之前**：存储层、采集管线、JMX 与 HTTP 读口都已接上，
+当前处于 **Phase 5 第七段之前**：存储层、采集管线、JMX 与 HTTP 读口都已接上，
 三条信号线能落库并读回。**HTTP 读口已真机验收**（含"直方图桶比边界少一个"那个真实 bug 的修复）。
-剩 `#8` 扩展开健康并入 `/api/summary`（**取消 `/api/self` 与所有缓冲**）、
-`#9` 扩展自有日志（`/api/self-log`），两票互不依赖。
+读口侧 `#8`（扩展健康并入 `/api/summary`、取消 `/api/self` 与所有缓冲）与
+`#9`（扩展自有日志 `/api/self-log`）的代码都已落地，剩真机验收。
 第一个可运行形态见 README 的"目标用法"。
 
 **为什么没有 `/api/self`**：2026-10-05 实测发现 agent 2.32.0 上被前缀过滤的那批自监控指标

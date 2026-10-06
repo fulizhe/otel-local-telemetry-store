@@ -264,6 +264,10 @@ final String path = exchange.getRequestURI().getPath();
                     serveMetricPoints(exchange);
                     return;
                 }
+                if ("/api/self-log".equals(path)) {
+                    serveSelfLog(exchange);
+                    return;
+                }
                 sendError(exchange, 404, "not_found",
                         "没有这个端点。读口的端点清单是封闭的，见 docs/adr/adr-06-readout-http-surface.md");
             } catch (final RuntimeException e) {
@@ -346,6 +350,23 @@ private void servePage(final HttpExchange exchange, final String asset) throws I
                 out.add(copy);
             }
             serveJson(exchange, out);
+        }
+
+        /**
+         * 扩展自有日志的尾部（ADR-6 第九节）。
+         *
+         * <p>与其它列表端点的差别只有一处：**文件不存在不是错误**。它返回
+         * 200 + 空 {@code lines} + 一句 {@code note}，而不是 404/500 ——
+         * "扩展还没写过 / 文件被删"是运维常态，不该让脚本去分辨"坏了"与"暂时没有"。
+         *
+         * <p>行数封顶口径在 {@link ReadoutQueries#clampSelfLogLines(int)}，这一层只负责取参数。
+         */
+        private void serveSelfLog(final HttpExchange exchange) throws IOException {
+            if (!authorized(exchange)) {
+                return;
+            }
+            final Map<String, String> q = queryParams(exchange.getRequestURI().getRawQuery());
+            serveJson(exchange, queries.selfLog(parseLimit(q.get("lines"))));
         }
 
         /**

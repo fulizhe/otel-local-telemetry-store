@@ -2,7 +2,10 @@ package io.github.fulizhe.otelstore.readout;
 
 import io.github.fulizhe.otelstore.core.config.LocalStoreConfig;
 import io.github.fulizhe.otelstore.core.storage.LocalStore;
+import io.github.fulizhe.otelstore.core.util.SelfLog;
 import io.github.fulizhe.otelstore.core.util.ThrottledLogger;
+import java.io.File;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +55,15 @@ public final class ReadoutQueries {
      * 2000 是取整，不是"给多少都行" —— 再往上调要先回答"谁来读这 4000 条"。
      */
     public static final int MAX_LIMIT_METRICS = 2000;
+
+    /**
+     * 扩展自有日志尾部的缺省行数与上限（ADR-6 第三节/第九节）。
+     *
+     * <p>它是一整段文本而不是"看最近几条记录"，所以缺省比列表大（100）、上限也另立一档（500）。
+     * 超过上限就截到 500 —— 读口是"看一眼最近出过什么事"，不是日志下载口。
+     */
+    public static final int DEFAULT_SELF_LOG_LINES = 100;
+    public static final int MAX_SELF_LOG_LINES = 500;
 
     private final LocalStoreConfig config;
     private final LocalStore store;
@@ -327,6 +339,43 @@ public final class ReadoutQueries {
             ThrottledLogger.warn("readout-latest-metrics", "读各序列最新指标点失败", e);
             return null;
         }
+    }
+
+    /**
+     * 扩展自有日志的尾部若干行（ADR-6 第九节）。
+     *
+     * <p><b>只读扩展自己写的那一个文件</b>（`&lt;dataDir&gt;/otelstore.log`），
+     * 不碰应用的日志、也不猜 stderr 去了哪。
+     *
+     * <p>文件不存在/被截断/读失败都<b>不是错误</b>：返回空 {@code lines} 并给一句 {@code note}，
+     * 让页面能说"暂无内容"而不是报 500 —— 运维删日志、进程刚起，都会碰到这个状态。
+     *
+     * @param lines 尾部行数；非正数走缺省，超过 {@link #MAX_SELF_LOG_LINES} 截到上限
+     */
+    public Map<String, Object> selfLog(final int lines) {
+        final int n = clampSelfLogLines(lines);
+        List<String> tail;
+        try {
+            tail = SelfLog.tail(new File(config.getDataDir()), n);
+        } catch (final RuntimeException e) {
+            ThrottledLogger.warn("readout-self-log", "读扩展日志尾部失败", e);
+            tail = Collections.emptyList();
+        }
+        final Map<String, Object> m = new LinkedHashMap<String, Object>();
+        m.put("lines", tail);
+        m.put("file", SelfLog.FILE_NAME);
+        m.put("note", tail.isEmpty()
+                ? "暂无内容：扩展还没写过日志，或那个文件被外部删掉/截断了。"
+                : "");
+        return m;
+    }
+
+    /** 自有日志尾部行数的封顶口径；就这一处实现。 */
+    public static int clampSelfLogLines(final int lines) {
+        if (lines <= 0) {
+            return DEFAULT_SELF_LOG_LINES;
+        }
+        return Math.min(lines, MAX_SELF_LOG_LINES);
     }
 
     /**

@@ -138,7 +138,7 @@ java -javaagent:opentelemetry-javaagent.jar \
 | `/api/metrics?name=&limit=` | 指标点的**时间序列**（给了 `name` 则只看那个指标；不给就是最近若干个）。`detail` 结构化返回：桶上界（含 `+Inf`）、累计计数、分位点 |
 | `/api/traces/{id}` `/api/logs/{id}` | 单条详情：表头 + 载荷状态 + **解码后的** attributes / events / status。`{id}` 必须是纯数字 |
 | `/metrics` | Prometheus 文本（每个指标每个属性组合的**当前值**） |
-| `/api/self-log` | 扩展自己日志的尾部若干行（随 Phase 5 下一段落地） |
+| `/api/self-log?lines=` | 扩展自己日志的尾部若干行（默认 100、上限 500）；只读扩展自己写的 `<dataDir>/otelstore.log`，不读应用的日志文件 |
 
 页面**路径精确匹配**，没有无后缀别名（`/traces` 会 404，入口都在 `/`）。
 

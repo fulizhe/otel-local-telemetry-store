@@ -47,9 +47,21 @@
       <b>业务指标的历史不归我们</b>：想要"最近半小时"的曲线，
       <b>业务层要自己每秒发一个点</b>，我们照常像收任何业务指标一样收下、只存不缓存。
       <br>
-      <b>扩展自己的日志</b>还没接上 —— 正在做 <code>issue #9</code>，端点是 <code>/api/self-log</code>。
-      在那之前，扩展自己的日志在<b>启动日志</b>里（应用的标准错误），
-      里面能看到 <code>已注册三条采集管线</code>、存储降级原因、限速告警。
+      <b>扩展自己的日志</b>在下面那张卡片里（端点 <code>/api/self-log</code>），
+      排障时不用再去翻应用的标准错误。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>扩展自己的日志</h2>
+    <div class="msg foot" id="self-log-msg">加载中…</div>
+    <pre class="body" id="self-log-body"><span style="color:var(--dim)">–</span></pre>
+    <div class="foot">
+      只读扩展<b>自己写的那一个文件</b> <code>&lt;dataDir&gt;/otelstore.log</code>
+      （单文件 1 MiB、轮转 1 份，备份是 <code>otelstore.log.1</code>）。尾部默认 100 行、最多 500 行。
+      <br>
+      <b>不读应用的日志文件、也不猜 stderr 去了哪</b>：那是别人的文件，
+      为了展示扩展自己的状态去读它，等于把应用日志内容也复制到这一页上。
     </div>
   </div>
 
@@ -97,6 +109,6 @@
 </div>
 
 <script src="app.js"></script>
-<script>Otl.start('self', ['tiles', 'library']);</script>
+<script>Otl.start('self', ['tiles', 'library', 'selflog']);</script>
 </body>
 </html>

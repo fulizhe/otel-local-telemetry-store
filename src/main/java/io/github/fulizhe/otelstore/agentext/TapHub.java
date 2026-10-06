@@ -3,6 +3,8 @@ package io.github.fulizhe.otelstore.agentext;
 import io.github.fulizhe.otelstore.core.collection.RecordQueue;
 import io.github.fulizhe.otelstore.core.config.LocalStoreConfig;
 import io.github.fulizhe.otelstore.core.storage.LocalStore;
+import io.github.fulizhe.otelstore.core.util.SelfLog;
+import java.io.File;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -61,6 +63,9 @@ public final class TapHub implements AutoCloseable {
 
     public TapHub(final LocalStoreConfig config) {
         this.config = config;
+        // 先把扩展自己的日志挂到 <dataDir>/otelstore.log（ADR-6 第九节）。
+        // 放在最前面：紧随其后的"存储层就绪"与启动汇总那几行也应当进这一个文件。
+        SelfLog.attach(new File(config.getDataDir()));
         final int cap = config.getQueueCapacity();
         this.store = openStore(config);
         this.traces = new RecordQueue<Object>("traces", cap, spanSink(store));
@@ -320,6 +325,9 @@ public final class TapHub implements AutoCloseable {
         if (store != null) {
             store.close();
         }
+        // 摘掉构造时挂上的自有日志 handler。进程内单例，关掉就摘 ——
+        // 测试里每个用例都会建一次 hub，不摘的话 handler 会指着已被删掉的临时目录。
+        SelfLog.detach();
     }
 
     /**

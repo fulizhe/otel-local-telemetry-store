@@ -129,6 +129,9 @@ final Exec r = exec(node, script.toString());
         if ("tiles".equals(part)) {
             return "s-spans";
         }
+        if ("selflog".equals(part)) {
+            return "self-log-body";
+        }
         return "queues";
     }
 
@@ -277,6 +280,12 @@ final Exec r = exec(node, script.toString());
             // 详情端点要按 id 返回**带载荷**的对象，否则测不出"正文没渲染"
             + "  else if (/^\\/api\\/(traces|logs)\\/\\d+$/.test(url)) {\n"
             + "    body = detailFor(url.indexOf('/logs/') >= 0 ? 'log' : 'span');\n"
+            + "  }\n"
+            // 扩展自有日志：尾部文本，页面写进 #self-log-body
+            + "  else if (url.indexOf('/api/self-log') >= 0) {\n"
+            + "    body = { lines: ['2026-01-01 00:00:00.000 WARNING ThrottledLogger 存储层降级',"
+            + " '2026-01-01 00:00:01.000 INFO LocalStoreCustomizerProvider 已注册三条采集管线'],"
+            + " file: 'otelstore.log', note: '' };\n"
             + "  }\n"
             + "  else if (url.indexOf('/api/') === 0) { body = ROW; }\n"
             + "  else { body = {}; }\n"

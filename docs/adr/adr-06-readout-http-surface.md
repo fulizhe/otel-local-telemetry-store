@@ -223,8 +223,16 @@ ADR-1 里悬着的"读口跨源取舍"到此关闭。
 
 ### 九、扩展自己的日志：只读自己写的那一个文件
 
-- 给扩展自己的 logger 挂一个 JDK 自带的 `FileHandler`：`<dataDir>/otelstore.log`，
-  **单文件 1 MiB、轮转 1 份**（`count=1`）—— 符合本项目"有界"的第一原则。
+- 给扩展自己的 logger 挂一个 **JDK 日志框架的 `Handler`**（`SelfLog` 里的私有实现，
+  零三方依赖）：当前文件 `<dataDir>/otelstore.log`，轮转备份 `<dataDir>/otelstore.log.1`，
+  **单文件 1 MiB、只留 1 份备份**（合计有界 ≤ 2 MiB）—— 符合本项目"有界"的第一原则。
+- **为什么不用 `java.util.logging.FileHandler`**（2026-10-06 实测，数字见
+  `docs/notes/2026-10-06-self-log-filehandler-probe.md`）：它的 `count` 是**文件总数**、
+  不是"备份份数"。`count=1` 时超限只是把同一个文件**截断**，一份备份都没有
+  （写 200 行、limit 1000，最后只剩最新那条）；`count=2` 时 JDK 会按代次把文件名自动改成
+  `otelstore.log.0` / `.1`，文档写明的 `<dataDir>/otelstore.log` 根本不存在，
+  读端还得去猜哪个是当前文件。自己写一个 `Handler` 子类（约八十行）才同时拿到
+  **固定的文件名**与**确定的轮转**，而它仍属 `java.util.logging`，没有引入任何三方依赖。
 - `/api/self-log` 读它的**尾部 N 行**（默认 100、上限 500）。
 - **只读这个文件，不读应用的日志、也不猜 stderr 去了哪**：
   stderr 落哪个文件由启动方决定，扩展无从得知；而为了展示自己的状态去读

@@ -12,6 +12,7 @@ import io.github.fulizhe.otelstore.core.model.MetricPointEntry;
 import io.github.fulizhe.otelstore.core.model.ResourceDescriptor;
 import io.github.fulizhe.otelstore.core.model.SpanRecord;
 import io.github.fulizhe.otelstore.core.storage.LocalStore;
+import io.github.fulizhe.otelstore.core.util.SelfLog;
 import io.github.fulizhe.otelstore.readout.ReadoutQueries;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -238,9 +239,11 @@ class HttpReadoutTest {
                     "页面不许硬编码降级原因 —— 可能是路径不是目录/权限/占用/建表失败：" + shortTail(self));
             assertTrue(self.contains("id=\"config\""), "生效配置要留在这一页：" + shortTail(self));
             assertTrue(self.contains("id=\"queues\""), shortTail(self));
-            // #9 还没做，必须如实说
-            assertTrue(self.contains("#9") && self.contains("/api/self-log"),
-                    "#9 还没接上，要写明：" + shortTail(self));
+            // #9 已接上：要有"扩展自己的日志"展示块，且不再留"还没接上"的占位
+            assertTrue(self.contains("id=\"self-log-body\""),
+                    "要有扩展自有日志的展示块：" + shortTail(self));
+            assertTrue(self.contains("/api/self-log"), shortTail(self));
+            assertFalse(self.contains("#9"), "占位该去掉了：" + shortTail(self));
         }
     }
 
@@ -261,7 +264,57 @@ class HttpReadoutTest {
                 assertEquals(404, r.status, p + " 必须 404");
                 assertTrue(r.body.contains("\"error\":\"not_found\""), r.body);
             }
-            assertEquals(404, get(port, "/api/self-log").status, "/api/self-log 是还没做（#9）");
+        }
+    }
+
+    /** 往数据目录写一份"扩展自有日志"。内容全是 ASCII，行尾用平台换行（与写入端一致）。 */
+    private static void writeSelfLog(final File dataDir, final int lines) throws IOException {
+        final StringBuilder sb = new StringBuilder();
+        for (int i = 1; i <= lines; i++) {
+            sb.append("self-line-").append(i).append(System.lineSeparator());
+        }
+        java.nio.file.Files.write(new File(dataDir, SelfLog.FILE_NAME).toPath(),
+                sb.toString().getBytes(Charset.defaultCharset()));
+    }
+
+    private static int selfLinesIn(final String body) {
+        int n = 0;
+        int i = body.indexOf("self-line-");
+        while (i >= 0) {
+            n++;
+            i = body.indexOf("self-line-", i + 1);
+        }
+        return n;
+    }
+
+    @Test
+    @DisplayName("/api/self-log 读扩展自有日志的尾部：缺省 100、上限 500")
+    void selfLogReadsTailWithCap(@TempDir final File dataDir) throws Exception {
+        writeSelfLog(dataDir, 600);
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final int port = readout.getActualPort();
+
+            final String all = get(port, "/api/self-log").body;
+            assertTrue(all.contains("\"lines\":["), all);
+            assertEquals(100, selfLinesIn(all), "缺省给 100 行：" + all);
+            assertTrue(all.contains("self-line-600"), "读的是尾部，最后一行必须在：" + all);
+
+            assertEquals(2, selfLinesIn(get(port, "/api/self-log?lines=2").body), "给了 2 就给 2 行");
+            assertEquals(500, selfLinesIn(get(port, "/api/self-log?lines=9999").body),
+                    "超过上限截到 500，不做日志下载口");
+        }
+    }
+
+    @Test
+    @DisplayName("/api/self-log 文件缺失时是 200 + 暂无内容，不是 500")
+    void selfLogMissingFileIsNotAnError(@TempDir final File dataDir) throws Exception {
+        try (LocalStore store = storeWithOneSpan(dataDir);
+             HttpReadout readout = start(dataDir, 0, false, null, store)) {
+            final Response r = get(readout.getActualPort(), "/api/self-log");
+            assertEquals(200, r.status, "文件不在不是错误：" + r.body);
+            assertEquals(0, selfLinesIn(r.body), r.body);
+            assertTrue(r.body.contains("暂无内容"), "要把'暂时没有'说清楚：" + r.body);
         }
     }
 
@@ -449,7 +502,8 @@ class HttpReadoutTest {
             required.put("/metrics.html", new String[]{
                 "metrics", "metrics-msg", "metrics-count", "metric-name", "wrap"});
             required.put("/self.html", new String[]{
-                "queues", "rings", "config", "msg", "s-spans", "tiles-note"});
+                "queues", "rings", "config", "msg", "s-spans", "tiles-note",
+                "self-log-body", "self-log-msg"});
 
             for (final java.util.Map.Entry<String, String[]> page : required.entrySet()) {
                 final String body = get(port, page.getKey()).body;
@@ -468,7 +522,7 @@ class HttpReadoutTest {
                 "spans-msg", "logs-msg", "metrics-msg", "spans-count", "logs-count", "metrics-count",
                 "queues", "rings", "config", "s-spans", "s-logs", "s-metrics", "s-resources",
                 "msg", "tiles-note", "detail-overlay", "detail-msg", "detail-body", "detail-kind",
-                "auth-card", "token", "trace-id", "metric-name"}) {
+                "auth-card", "token", "trace-id", "metric-name", "self-log-body", "self-log-msg"}) {
                 assertTrue(js.contains("'" + id + "'") || js.contains("\"" + id + "\""),
                         "app.js 里引用了 #" + id + "，测试却没在任何页面上钉住它");
             }
@@ -587,17 +641,16 @@ class HttpReadoutTest {
         try (LocalStore store = storeWithOneSpan(dataDir);
              HttpReadout readout = start(dataDir, 0, false, null, store)) {
             final int port = readout.getActualPort();
-            // 本段已落地的端点：/、/api/summary、/api/traces、/api/logs、/api/metrics、/metrics
+            // 已落地的端点：/、/api/summary、/api/traces、/api/logs、/api/metrics、/api/self-log、/metrics
             for (final String path : new String[]{"/", "/api/summary", "/api/traces", "/api/logs",
-                    "/api/metrics", "/metrics"}) {
+                    "/api/metrics", "/api/self-log", "/metrics"}) {
                 assertEquals(200, get(port, path).status, path + " 用 GET 应当可达");
             }
-            // 还没实现的必须 404 而不是 200 空壳 —— 否则会以为它通了。
-            // /api/self 是**永远不提供**（取消前从未实现）；/api/self-log 是还没做（#9）；
-            // /api/payload 同样是**永远不提供**的那个
+            // 永远不提供的端点必须 404 而不是 200 空壳 —— 否则会以为它通了。
+            // /api/self 是**永远不提供**（取消前从未实现）；/api/payload 同样是**永远不提供**的那个
             // （ADR-6 第七节）
-            for (final String path : new String[]{"/api/self", "/api/self-log", "/api/payload/1"}) {
-                assertEquals(404, get(port, path).status, path + " 还没实现，必须是 404");
+            for (final String path : new String[]{"/api/self", "/api/payload/1"}) {
+                assertEquals(404, get(port, path).status, path + " 永远不提供，必须是 404");
             }
             for (final String method : new String[]{"POST", "PUT", "DELETE", "OPTIONS"}) {
                 final Response r = call(port, "/api/summary", method, null, null);

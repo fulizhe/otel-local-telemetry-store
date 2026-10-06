@@ -1,6 +1,7 @@
 package io.github.fulizhe.otelstore.agentext;
 
 import io.github.fulizhe.otelstore.core.config.LocalStoreConfig;
+import io.github.fulizhe.otelstore.core.util.SelfLog;
 import io.github.fulizhe.otelstore.readout.ReadoutQueries;
 import io.github.fulizhe.otelstore.readout.http.HttpReadout;
 import io.github.fulizhe.otelstore.readout.jmx.JmxReadout;
@@ -148,6 +149,7 @@ public final class LocalStoreCustomizerProvider implements AutoConfigurationCust
         final boolean http = startHttpReadout(config, queries);
         LOGGER.info("[otel-local-telemetry-store] 已注册三条采集管线"
                 + " dataDir=" + config.getDataDir()
+                + " selfLogFile=" + SelfLog.FILE_NAME
                 + " queueCapacity=" + config.getQueueCapacity()
                 + " cappedTracesBytes=" + config.getCappedTracesBytes()
                 + " cappedLogsBytes=" + config.getCappedLogsBytes()

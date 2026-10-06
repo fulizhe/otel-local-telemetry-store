@@ -762,6 +762,45 @@ var Otl = (function () {
     }).join('') || '<tr><td colspan="7" style="color:var(--dim)">–</td></tr>';
   }
 
+  /**
+   * 扩展自有日志的尾部（只读扩展自己写的那个文件，端点 /api/self-log）。
+   *
+   * <p>它不走 /api/summary：日志是一整段文本，与那几张健康表不是一类。
+   * 文件不存在/被删时接口返回 200 + 空 lines + 一句 note，页面照 note 说"暂无内容"，
+   * 而不是显示成加载失败 —— 运维删日志、进程刚起都会碰到这个状态。
+   */
+  function loadSelfLog() {
+    fetch('/api/self-log?lines=200', { headers: headers(), cache: 'no-store' })
+      .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
+      .then(renderSelfLog)
+      .catch(function (e) {
+        if (has('self-log-msg')) {
+          $('self-log-msg').innerHTML = '<span class="err">读扩展日志失败：' + esc(e.message) + '</span>';
+        }
+      });
+  }
+
+  function renderSelfLog(res) {
+    if (res.s === 401) { unauth(); return; }
+    if (res.s !== 200 || !res.d) {
+      if (has('self-log-msg')) {
+        $('self-log-msg').innerHTML = '<span class="err">' + esc(errorText(res)) + '</span>';
+      }
+      return;
+    }
+    var lines = res.d.lines || [];
+    if (has('self-log-msg')) {
+      $('self-log-msg').textContent = lines.length
+        ? ('尾部 ' + lines.length + ' 行（' + (res.d.file || '') + '）')
+        : (res.d.note || '暂无内容');
+    }
+    if (has('self-log-body')) {
+      $('self-log-body').innerHTML = lines.length
+        ? esc(lines.join('\n'))
+        : '<span style="color:var(--dim)">暂无内容</span>';
+    }
+  }
+
   /** 段名 → 表格 tbody 的 id。**这两者不是同一个词**，别靠"恰好同名"活着。 */
   var TABLE_OF = { traces: 'spans', logs: 'logs', metrics: 'metrics' };
 
@@ -812,7 +851,8 @@ var Otl = (function () {
     logs: loadLogs,
     metrics: loadMetrics,
     tiles: function () { return loadSummary(tiles); },
-    library: function () { return loadSummary(libraryTables); }
+    library: function () { return loadSummary(libraryTables); },
+    selflog: loadSelfLog
   };
 
   /**
