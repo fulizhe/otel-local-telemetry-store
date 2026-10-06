@@ -809,14 +809,18 @@ var Otl = (function () {
   }
 
   /**
-   * 扩展自有日志的尾部（只读扩展自己写的那个文件，端点 /api/self-log）。
+   * 扩展自有日志（只读扩展自己写的那个文件，端点 /api/self-log）。
    *
-   * <p>它不走 /api/summary：日志是一整段文本，与那几张健康表不是一类。
-   * 文件不存在/被删时接口返回 200 + 空 lines + 一句 note，页面照 note 说"暂无内容"，
+   * <p>它是**给人读的**：把每行拆成「时间 / 级别 / 来源 / 消息」，按级别配色，
+   * 异常栈挂在它那条记录下面，新的排在最上面。不做成"一坨纯文本"，
+   * 更不把 JSON 接口那套直接摆到页面上。
+   *
+   * <p>文件不存在/被删时接口返回 200 + 空 lines + 一句 note，页面照 note 说"暂无内容"，
    * 而不是显示成加载失败 —— 运维删日志、进程刚起都会碰到这个状态。
    */
   function loadSelfLog() {
-    fetch('/api/self-log?lines=200', { headers: headers(), cache: 'no-store' })
+    // 取到上限（500）：这就是"整个近期日志"—— 文件本身有界（1 MiB、只留 1 份备份）。
+    fetch('/api/self-log?lines=500', { headers: headers(), cache: 'no-store' })
       .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
       .then(renderSelfLog)
       .catch(function (e) {
@@ -824,6 +828,31 @@ var Otl = (function () {
           $('self-log-msg').innerHTML = '<span class="err">读扩展日志失败：' + esc(e.message) + '</span>';
         }
       });
+  }
+
+  /** 一行日志的开头：`2026-10-06 10:33:02.554 INFO TapHub 消息…`。 */
+  var SELFLOG_LINE = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}\.\d{3}) ([A-Z]+) (\S+) ([\s\S]*)$/;
+
+  function levelColor(level) {
+    if (level === 'SEVERE') { return 'var(--err)'; }
+    if (level === 'WARNING') { return 'var(--warn)'; }
+    return 'var(--dim)';
+  }
+
+  /** 把行拆成记录；不以时间开头的行（异常栈）挂到上一条上，而不是当成新记录。 */
+  function parseSelfLog(lines) {
+    var entries = [];
+    (lines || []).forEach(function (line) {
+      var m = SELFLOG_LINE.exec(line);
+      if (m) {
+        entries.push({ date: m[1], time: m[2], level: m[3], src: m[4], msg: m[5], extra: [] });
+      } else if (entries.length) {
+        entries[entries.length - 1].extra.push(line);
+      } else {
+        entries.push({ date: '', time: '', level: '', src: '', msg: line, extra: [] });
+      }
+    });
+    return entries;
   }
 
   function renderSelfLog(res) {
@@ -835,16 +864,50 @@ var Otl = (function () {
       return;
     }
     var lines = res.d.lines || [];
+    if (!lines.length) {
+      if (has('self-log-msg')) { $('self-log-msg').textContent = res.d.note || '暂无内容'; }
+      if (has('self-log-body')) {
+        $('self-log-body').innerHTML = '<div class="foot">暂无内容。</div>';
+      }
+      return;
+    }
+
+    var entries = parseSelfLog(lines);
+    var warnings = 0, errors = 0;
+    var firstDate = entries[0].date;
+    entries.forEach(function (e) {
+      if (e.level === 'WARNING') { warnings++; } else if (e.level === 'SEVERE') { errors++; }
+    });
     if (has('self-log-msg')) {
-      $('self-log-msg').textContent = lines.length
-        ? ('尾部 ' + lines.length + ' 行（' + (res.d.file || '') + '）')
-        : (res.d.note || '暂无内容');
+      $('self-log-msg').textContent = '最近 ' + lines.length + ' 行 · '
+        + (firstDate ? firstDate + ' 起 · ' : '')
+        + (res.d.file || '')
+        + (warnings ? ' · 告警 ' + warnings : '')
+        + (errors ? ' · 错误 ' + errors : '');
     }
-    if (has('self-log-body')) {
-      $('self-log-body').innerHTML = lines.length
-        ? esc(lines.join('\n'))
-        : '<span style="color:var(--dim)">暂无内容</span>';
-    }
+    if (!has('self-log-body')) { return; }
+
+    // 新的在最上面：想看"最近出过什么事"不必先滚到底
+    entries.reverse();
+    var rows = entries.map(function (e) {
+      var head = '<div style="display:flex;gap:10px;align-items:baseline;padding:3px 0;'
+        + 'border-top:1px solid var(--line)">'
+        + '<span style="color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums">'
+        + esc(e.time || '') + '</span>'
+        + '<span style="color:' + levelColor(e.level) + ';font-weight:600;min-width:62px;'
+        + (e.level ? '' : 'visibility:hidden') + '">' + esc(e.level || '') + '</span>'
+        + '<span style="color:var(--dim);min-width:94px;max-width:94px;overflow:hidden;'
+        + 'text-overflow:ellipsis;white-space:nowrap" title="' + esc(e.src) + '">'
+        + esc(e.src || '') + '</span>'
+        + '<span style="flex:1;white-space:pre-wrap;word-break:break-word">' + esc(e.msg) + '</span>'
+        + '</div>';
+      if (!e.extra.length) { return head; }
+      return head + '<pre style="margin:0 0 6px;padding:6px 8px;background:var(--panel-2);'
+        + 'border:1px solid var(--line);border-radius:6px;overflow:auto;white-space:pre-wrap;'
+        + 'color:var(--dim)">' + esc(e.extra.join('\n')) + '</pre>';
+    }).join('');
+    $('self-log-body').innerHTML = '<div style="max-height:62vh;overflow:auto;'
+      + 'border:1px solid var(--line);border-radius:6px;padding:2px 10px">' + rows + '</div>';
   }
 
   /** 段名 → 表格 tbody 的 id。**这两者不是同一个词**，别靠"恰好同名"活着。 */

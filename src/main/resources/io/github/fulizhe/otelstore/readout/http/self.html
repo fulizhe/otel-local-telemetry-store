@@ -55,10 +55,11 @@
   <div class="card">
     <h2>扩展自己的日志</h2>
     <div class="msg foot" id="self-log-msg">加载中…</div>
-    <pre class="body" id="self-log-body"><span style="color:var(--dim)">–</span></pre>
+    <div id="self-log-body" style="margin-top:12px"><span style="color:var(--dim)">–</span></div>
     <div class="foot">
       只读扩展<b>自己写的那一个文件</b> <code>&lt;dataDir&gt;/otelstore.log</code>
-      （单文件 1 MiB、轮转 1 份，备份是 <code>otelstore.log.1</code>）。尾部默认 100 行、最多 500 行。
+      （单文件 1 MiB、轮转 1 份，备份是 <code>otelstore.log.1</code>）。
+      这里显示最近 500 行，<b>新的在最上面</b>；按级别配色，异常栈挂在它那条记录下面。
       <br>
       <b>不读应用的日志文件、也不猜 stderr 去了哪</b>：那是别人的文件，
       为了展示扩展自己的状态去读它，等于把应用日志内容也复制到这一页上。
