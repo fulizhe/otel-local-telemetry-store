@@ -23,6 +23,9 @@ public final class H2Dependency implements DependencyProbe {
     public static final String KEY = DepsRegistry.H2;
     private static final String TITLE = "H2（进程内内存库）";
 
+    /** 驱动类名。用字符串而不是直接引用 —— H2 是 runtime scope，见 {@link JdbcDriver}。 */
+    private static final String DRIVER = "org.h2.Driver";
+
     /**
      * 库名与 {@code DB_CLOSE_DELAY=-1}：后者保证内存库在第一条连接关掉之后还在 ——
      * 否则每次探测建出来的库都会消失，端点会看到一张空表。
@@ -85,7 +88,7 @@ public final class H2Dependency implements DependencyProbe {
      * <b>SQL 里的表名</b> —— span name 就是 SQL，图上直接读得出来，零后端改动（ADR-7）。
      */
     void initSchema() throws SQLException {
-        try (final Connection conn = DriverManager.getConnection(jdbcUrl);
+        try (final Connection conn = connect();
              final Statement st = conn.createStatement()) {
             st.execute("CREATE TABLE IF NOT EXISTS demo_h2_order ("
                     + "id INT PRIMARY KEY, item VARCHAR(64), amount INT)");
@@ -100,7 +103,7 @@ public final class H2Dependency implements DependencyProbe {
      * @return 表里的行数，交给调用方做"我造了多少 / 库里存了多少"的对账
      */
     public int queryOrders() throws SQLException {
-        try (final Connection conn = DriverManager.getConnection(jdbcUrl);
+        try (final Connection conn = connect();
              final Statement st = conn.createStatement();
              final ResultSet rs = st.executeQuery(
                      "SELECT item, amount FROM demo_h2_order ORDER BY id")) {
@@ -110,5 +113,16 @@ public final class H2Dependency implements DependencyProbe {
             }
             return rows;
         }
+    }
+
+    /**
+     * 取连接。<b>每次都先显式注册驱动</b>（幂等，成本可忽略）。
+     *
+     * <p>放在这里而不是只放探测里：调用端点也可能在探测之后、agent 把
+     * {@code DriverManager} 初始化过之后才第一次连 —— 那时才发现驱动没了就晚了。
+     */
+    private Connection connect() throws SQLException {
+        JdbcDriver.ensure(DRIVER);
+        return DriverManager.getConnection(jdbcUrl);
     }
 }

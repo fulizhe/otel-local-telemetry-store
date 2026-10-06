@@ -48,6 +48,28 @@ class RedisDependencyTest {
     }
 
     @Test
+    @DisplayName("配置端口被占 → 退到空闲端口重试，而不是整跳降级")
+    void occupiedPortFallsBackToFreePort() throws Exception {
+        // 占用一个端口，冒充"上次跑残留的 redis-server"
+        try (final ServerSocket squatter = new ServerSocket(0)) {
+            final int taken = squatter.getLocalPort();
+            final RedisDependency dep = new RedisDependency("127.0.0.1", taken, 1000);
+            try {
+                final DepStatus s = dep.probe();
+                assertTrue(s.ready(),
+                        "端口被占应该退让而不是降级（真机就是这么被一个残留进程坑掉的）："
+                                + s.detail());
+                assertTrue(dep.actualPort() != taken,
+                        "退让后实际端口必须与配置的不同，否则那条退让说明是假的");
+                assertTrue(s.detail().contains("退让"), "detail 要写明退让过：" + s.detail());
+                assertEquals("PONG", dep.call().get("ping"), "退让之后还得真的能用");
+            } finally {
+                dep.stop();
+            }
+        }
+    }
+
+    @Test
     @DisplayName("没有服务端时要降级而不是抛异常，且要说清为什么")
     void noServerDegradesWithReason() throws Exception {
         // 先起一个、再关掉，端口就回到"没人听"的状态 —— 比用一个保留端口可靠

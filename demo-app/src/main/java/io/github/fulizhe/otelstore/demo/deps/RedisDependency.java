@@ -29,6 +29,8 @@ public final class RedisDependency implements DependencyProbe {
     private final int timeoutMs;
 
     private volatile RedisServer server;
+    /** 实际起在哪个端口。配置端口被占时会退让，所以它与 {@link #port} 可能不同。 */
+    private volatile int actualPort = -1;
 
     public RedisDependency() {
         this("127.0.0.1", 6379, 1000);
@@ -59,8 +61,14 @@ public final class RedisDependency implements DependencyProbe {
         return host;
     }
 
+    /** 配置的端口（未必是实际用的那个 —— 被占时会退让，见 {@link #actualPort()}）。 */
     public int port() {
         return port;
+    }
+
+    /** 实际监听的端口。没用退让时与 {@link #port()} 相同。 */
+    public int actualPort() {
+        return actualPort;
     }
 
     /**
@@ -72,23 +80,61 @@ public final class RedisDependency implements DependencyProbe {
     @Override
     public DepStatus probe() {
         try {
-            if (server == null) {
-                server = RedisServer.builder().port(port).setting("maxmemory 128M").build();
-                server.start();
-            }
-            final String pong = new Jedis(host, port, timeoutMs).ping();
+            startConfiguredOrFallback();
+            final String pong = new Jedis(host, actualPort, timeoutMs).ping();
             if (!"PONG".equalsIgnoreCase(pong)) {
                 return DepStatus.notReady(KEY, TITLE, true,
                         "连上了但 PING 回的不是 PONG（拿到 " + pong + "）—— 那个端口上可能是别的服务");
             }
+            final String where = actualPort == port
+                    ? String.valueOf(port)
+                    : actualPort + "（配置的 " + port + " 被占，已退让）";
             return DepStatus.ready(KEY, TITLE, true,
-                    "进程内服务端就绪（起在 " + port + "，PING 已回 PONG）");
+                    "进程内服务端就绪（起在 " + where + "，PING 已回 PONG）");
         } catch (final Exception e) {
             // 起不来的常见原因是 exe 被拦或端口被占，两者的处置完全不同，所以带上原因
             return DepStatus.notReady(KEY, TITLE, true,
                     "起不来（" + e.getClass().getSimpleName()
                             + (e.getMessage() == null ? "" : " — " + e.getMessage())
                             + "）。降级：这一跳不会出现在链路图上，进程照常启动（ADR-7）");
+        }
+    }
+
+    /**
+     * 先试配置端口，<b>被占就退到随机空闲端口重试一次</b>。
+     *
+     * <p>不是洁癖，是实测出来的：真机验收时配置的 6379 上蹲着一个<b>上次跑残留的
+     * redis-server</b>，于是这一跳整个降级 —— 而它本可以照常工作。
+     * 主体对读口端口立的就是"端口冲突不阻塞启动、退随机并报出实际值"，
+     * 靶子这一跳没理由做得更差。
+     *
+     * <p>只重试一次、只换端口：换端口解决"被占"，解决不了"exe 被拦"，
+     * 后者多试几次也是一样的结果。
+     */
+    private void startConfiguredOrFallback() throws Exception {
+        if (server != null) {
+            return;
+        }
+        try {
+            startOn(port);
+        } catch (final RuntimeException first) {
+            server = null;                       // 起了一半也算没起，重试前先清
+            startOn(freePort());
+        }
+    }
+
+    private synchronized void startOn(final int p) {
+        final RedisServer s = RedisServer.builder().port(p).setting("maxmemory 128M").build();
+        s.start();
+        server = s;
+        actualPort = p;
+    }
+
+    private static int freePort() {
+        try (final java.net.ServerSocket probe = new java.net.ServerSocket(0)) {
+            return probe.getLocalPort();
+        } catch (final java.io.IOException e) {
+            throw new IllegalStateException("找不到空闲端口", e);
         }
     }
 
@@ -102,7 +148,7 @@ public final class RedisDependency implements DependencyProbe {
     public Map<String, Object> call() {
         final Map<String, Object> m = new LinkedHashMap<String, Object>();
         // 超时显式收紧：靶子起不来的最常见表现是端点挂在那里不返回
-        try (final Jedis jedis = new Jedis(host, port, timeoutMs)) {
+        try (final Jedis jedis = new Jedis(host, actualPort, timeoutMs)) {
             final String key = "otelstore:demo";
             final String value = "hello-from-demo";
             m.put("ping", jedis.ping());
@@ -118,6 +164,7 @@ public final class RedisDependency implements DependencyProbe {
     void stop() {
         final RedisServer s = server;
         server = null;
+        actualPort = -1;
         if (s != null) {
             try {
                 s.stop();

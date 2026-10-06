@@ -28,6 +28,9 @@ public final class MysqlDependency implements DependencyProbe {
     public static final String KEY = DepsRegistry.MYSQL;
     private static final String TITLE = "MySQL（外部实例）";
 
+    /** 驱动类名。用字符串而不是直接引用 —— 见 {@link JdbcDriver} 里那个 agent 的坑。 */
+    private static final String DRIVER = "com.mysql.cj.jdbc.Driver";
+
     static final String DEFAULT_HOST = "127.0.0.1";
     static final int DEFAULT_PORT = 13306;
     static final String DEFAULT_DB = "demo";
@@ -128,6 +131,8 @@ public final class MysqlDependency implements DependencyProbe {
     }
 
     private Connection connect() throws SQLException {
+        // 显式注册驱动：挂 agent 时 DriverManager 的自动发现会用错 TCCL，见 JdbcDriver
+        JdbcDriver.ensure(DRIVER);
         return DriverManager.getConnection(jdbcUrl(), "root", "");
     }
 

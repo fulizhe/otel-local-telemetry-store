@@ -83,7 +83,7 @@ curl.exe --noproxy "*" "http://localhost:17890/api/traces?traceId=<上一步的 
 `not-registered`）——「这个依赖没起来」是可预期的正常状态（MySQL 尤其如此），
 500 会让人分不清"依赖没起来"与"服务坏了"。进程照常启动，不重试。
 
-**六个坑**：
+**七个坑**：
 
 1. **Kafka 用的是 ZK 模式，不是 KRaft**。KRaft 在这台 Windows 上**起不来**：
    `KafkaRaftManager` 把 `@metadata-0/quorum-state.tmp` 改名成 `quorum-state` 时，
@@ -92,13 +92,21 @@ curl.exe --noproxy "*" "http://localhost:17890/api/traces?traceId=<上一步的 
 2. **H2 与 MySQL 在图上长得一模一样**：都只产生一条 `scopeName=jdbc` 的 CLIENT span。
    H2 是内存库、没有网络连接，所以**没有 SERVER span**；MySQL 的线协议层 agent 也没仪表化。
    → 区分靠 **SQL 里的表名**（`demo_h2_order` / `demo_mysql_order`），span name 就是 SQL。
-3. **别用 starter**。Spring Boot 管理的 Lettuce 6.x / spring-kafka 落在仪表化支持范围外，
+3. **JDBC 驱动必须显式注册**（`JdbcDriver.ensure`）。挂 agent 且跑 Spring Boot fat jar 时
+   `DriverManager` 的自动发现会漏掉 `BOOT-INF/lib` 里的驱动，症状是
+   `No suitable driver found` —— 而**单测与 `-cp target/classes` 都发现不了**，
+   因为只有 fat jar 才用 `LaunchedURLClassLoader`。见
+   [`../docs/notes/2026-10-05-five-hops-env-facts.md`](../docs/notes/2026-10-05-five-hops-env-facts.md)。
+4. **Redis 的端口会退让**：配置 6379 被占（例如上一轮残留的 `redis-server`）时退到随机空闲端口，
+   `/demo/deps/status` 的 `detail` 会写明。**端口残留**来自 `Stop-Process` 那类杀进程
+   （关停钩子不执行）；正常 `Ctrl-C` 会触发 `DepsLifecycle` 把内嵌服务端都关掉。
+5. **别用 starter**。Spring Boot 管理的 Lettuce 6.x / spring-kafka 落在仪表化支持范围外，
    **静默不生效** —— 所以 H2/MySQL 也只引驱动不引 JDBC starter。
-4. **`scopeName` 全一样** → 调用的不是客户端类（例如错用了 `MockProducer`）。
-5. **`/demo/stats` 里 `depCalls` 与 `depFailures` 分开** ——
+6. **`scopeName` 全一样** → 调用的不是客户端类（例如错用了 `MockProducer`）；
+   **`/demo/stats` 里 `depCalls` 与 `depFailures` 分开** ——
    「少了一条 CLIENT span」可能是没埋点，也可能是库没起来，混成一个数就分不出来了。
-6. **gRPC 只 `assign()` 不 `subscribe()`**（Kafka 的 consumer），
-   且 gRPC 用**真端口**——进程内直调不会产生 SERVER span，而"两侧都有 span"正是那一跳的理由。
+7. **Kafka 的 consumer 只 `assign()` 不 `subscribe()`**，且 **gRPC 用真端口** ——
+   进程内直调不会产生 SERVER span，而"两侧都有 span"正是那一跳的理由。
 
 ## 每秒一个真实计数（`demo.per_second.*`）
 
@@ -199,6 +207,8 @@ demo-app/
     │   │   │   ├── KafkaDependency.java      内嵌 broker + 内嵌 ZooKeeper（ZK 模式）
     │   │   │   ├── GrpcDependency.java       真端口 Netty server，手搓 descriptor
     │   │   │   ├── MysqlDependency.java      唯一外部依赖，连不上就降级
+    │   │   │   ├── JdbcDriver.java           显式注册 JDBC 驱动（fat jar + agent 的坑）
+    │   │   │   ├── DepsLifecycle.java        Ctrl-C 时关掉内嵌服务端，别留残进程
     │   │   │   └── DepsDemoService.java      调用 + 降级响应（**不开自己的 span**）
     │   │   └── web/
     │   │       ├── DemoSignalController.java 造信号的全部端点
