@@ -176,21 +176,22 @@ Invoke-RestMethod -NoProxy http://localhost:18081/demo/stats   # PS7 支持 -NoP
 你会以为扩展挂上了，其实没有。`scripts/run-with-agent.ps1` 会在起之前替 agent 把这个坑堵掉 ——
 扩展 jar 不存在就直接失败。
 
-## 现在还看不到什么
+## 怎么看库里的数据
 
-**存储已经能用了，但只有 JMX 那条读口**（Phase 4b 落地，Phase 5 未做）。所以现在：
+造出来的信号**真的进了本地库** —— H2 内存表头 + 两个堆外环形文件，落在 `dataDir` 里。
+读口是 agent 扩展里的一个 HTTP 服务（默认端口 `17890`，撞端口自动退随机，实际端口写在
+`<dataDir>/otelstore.port` 与启动日志里）。首页的「存储读口」卡片会读出这个实际地址，
+测试黄页打完依赖后也能直接跳过去。三条路看数据：
 
-- 造出来的信号**真的进了本地库** —— H2 内存表头 + 两个堆外环形文件，落在 `dataDir` 里
-- **页面上的「存储读口」卡片仍只是一段说明**：HTTP 读口还没做，浏览器读不到
-- 要在浏览器之外看数据，用 `jconsole` 连本进程 → MBeans →
-  `io.github.fulizhe.otelstore` → `LocalStoreSummary`
+- 浏览器打开**读口那侧**（`http://<host>:17890/`）：索引页给各页入口，`traces.html` /
+  `logs.html` / `metrics.html` 看三条线，`topology.html` 看依赖，`self.html` / `self-log.html`
+  看扩展自身
+- 进程内完整快照用 `jconsole` → MBeans → `io.github.fulizhe.otelstore` → `LocalStoreSummary`
   （`summary` / `recentSpans(10)` / `spansOfTrace(<trace_id>)` / `spanPayloadHex(<id>)`）
+- 命令行 `curl` 打 `/api/*`（端点清单见根 [`README.md`](../README.md)）
 
 验收信号与失败判据见
 [`../docs/notes/2026-10-04-verification-and-pitfalls.md`](../docs/notes/2026-10-04-verification-and-pitfalls.md)。
-
-Phase 5 之后，读口会是 agent 扩展里的一个 HTTP 服务（默认端口 `17890`，撞端口自动退随机，
-实际端口写在 `otel-local-telemetry-store/otelstore.port` 与启动日志里）。
 
 **跨源问题已经定了**（[ADR-6](../docs/adr/adr-06-readout-http-surface.md) 第五节）：
 **浏览器直接打开读口那侧**（`http://<host>:17890/`），因此**读口不开 CORS、本页不加代理**。

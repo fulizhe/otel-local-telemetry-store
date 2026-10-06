@@ -2,10 +2,15 @@
 
 **把 OpenTelemetry 的 traces / logs / metrics 留在应用自己的进程内** —— 不发往任何远端，也不需要第二套 agent。
 
-> **状态：存储已落地，端到端未验收。** 三条采集管线能把 traces / logs / metrics 写进本地库
-> （H2 内存表头 + 堆外环形载荷），并通过 **JMX** 读回来。**HTTP 读口与 Prometheus 端点还没做**，
-> 所以下面「目标用法」里只有存储与限额那几项配置**现在就有效果**，读口那几项要等下一阶段。
-> 演示应用已经能跑，负责造三个信号并给出可断言的计数。
+> **状态：Phase 5 —— 存储、三条采集管线、JMX 与 HTTP 读口都已接上，三条信号能落库并读回。**
+> HTTP 读口已**真机验收**（含"直方图桶比边界少一个"那个真实 bug 的修复）；读口侧的自监控
+> （并入 `/api/summary`）与扩展自有日志页 `/self-log.html` 代码已落地，剩真机验收。
+> **没有 `/api/self`，也没有任何历史缓冲** —— 2026-10-05 实测发现 agent 默认配置下被前缀
+> 过滤的那批自监控指标根本不会到达，缓冲没有意义（[ADR-6](docs/adr/adr-06-readout-http-surface.md) 第八节）。
+>
+> 读口页面**一页一条线**：`/` 是索引，`traces.html` / `logs.html` / `metrics.html` /
+> `topology.html` / `self.html` / `self-log.html` 各一条（[ADR-6](docs/adr/adr-06-readout-http-surface.md) 第十三节、
+> [ADR-8](docs/adr/adr-08-dependency-topology.md)）。演示应用负责造三个信号并给出可断言的计数。
 >
 > 端到端验收信号、失败判据与踩坑记录见
 > [`docs/notes/2026-10-04-verification-and-pitfalls.md`](./docs/notes/2026-10-04-verification-and-pitfalls.md)。
@@ -37,7 +42,7 @@
 
 - **profiling** —— 需要 native agent（async-profiler），OTel 信号管线给不了。
   明确排除，不是"以后顺手加上"。研究问题已记在 [`docs/notes/2026-10-04-profiling-research.md`](./docs/notes/2026-10-04-profiling-research.md)。
-- **Web UI** —— v1 只提供读口与 Prometheus 端点，产品级界面是独立里程碑。
+- **Web UI**（产品级）—— 只有读口内置的**只读页面**（一页一条线，无前端构建、无 SPA）；独立的界面工程是另一个里程碑。
 - **raw SQL 查询端点** —— 永远不提供。查询全部参数化，读口因此是结构性只读。
 
 ## 使用前提与注意事项
@@ -67,7 +72,7 @@ HTTP header（含 `Authorization` 与 `Cookie`）、请求体、日志原文。
 
 **⑤ agent 自监控指标不入库。**
 按 instrumentation scope 前缀黑名单过滤。它们回答的是"SDK 健康吗"，与业务数据混在一张库里
-既污染查询也误导排障。**看它们的地方是 JMX 与启动日志** —— 专门的指标面板随 HTTP 读口一起做。
+既污染查询也误导排障。**看它们的地方是 `/self.html` 与启动日志。**
 
 **⑥ 不支持 profiling。** 需要 native agent，OTel 信号管线给不了。
 
@@ -89,13 +94,14 @@ pwsh -NoProfile -File scripts/run-with-agent.ps1
 那几种"数据少了"在原理上不可计数，只能这样对照发现
 （[ADR-3](docs/adr/adr-03-four-ways-data-goes-missing.md)）。
 
-**网页上看不到库里存的东西** —— 它目前只显示自己造了多少。浏览器可读的数据要等 HTTP 读口。
+demo-app 首页给出**读口页面的实际地址**（读扩展写的端口文件，退让后也对）与一张**测试黄页**；
+要在浏览器里看库里的数据，打开**读口那侧**的页面（默认 `http://<host>:17890/`）。
 
 细节见 [`demo-app/README.md`](./demo-app/README.md)。
 
 ## 目标用法
 
-存储部分**现在就能跑**；读口那几项配置要等 HTTP 阶段。
+存储与读口**现在都能跑**，下面这些配置全部生效。
 
 ```bash
 java -javaagent:opentelemetry-javaagent.jar \
@@ -113,7 +119,7 @@ java -javaagent:opentelemetry-javaagent.jar \
 | 途径 | 适合 |
 | --- | --- |
 | 应用日志里每 60 秒一行 `周期 dataDir=… \| store spans=N logs=N metricPoints=N resources=M` | 快速自查"有没有收到、存了多少" |
-| 浏览器打开读口那侧 `http://<host>:17890/` | 交互式排查：索引页给各页入口；`traces.html` / `logs.html` / `metrics.html` 看三条线，`self.html` 看生效配置、库状态与自监控。点 span 或日志的行会弹出详情 |
+| 浏览器打开读口那侧 `http://<host>:17890/` | 交互式排查：索引页给各页入口；`traces.html` / `logs.html` / `metrics.html` 看三条线，`topology.html` 看依赖拓扑，`self.html` / `self-log.html` 看扩展自身。点 span 或日志的行会弹出详情 |
 | `jconsole` → MBeans → `io.github.fulizhe.otelstore` → `LocalStoreSummary` | 进程内的完整快照（`summary` / `recentSpans` / `spansOfTrace` / `spanPayloadHex`） |
 
 那行周期汇总是本扩展**唯一默认的周期性日志输出**；不想看就把
@@ -130,7 +136,7 @@ java -javaagent:opentelemetry-javaagent.jar \
 | `/traces.html` | span 列表页（不含数据，数据由页面 JS 带头去取） |
 | `/logs.html` | 日志列表页，同上 |
 | `/metrics.html` | 指标点页，同上 |
-| `/topology.html` | 依赖拓扑页：本进程调用过的**外部组件**（组件级，内联 SVG）。见 [ADR-8](docs/adr/adr-08-dependency-topology.md) |
+| `/topology.html` | 依赖拓扑页：本进程调用过的**外部组件**（组件级；ECharts `graph`，`echarts.min.js` 随读口本地发、加载失败回落内联 SVG）。见 [ADR-8](docs/adr/adr-08-dependency-topology.md) |
 | `/self.html` | 扩展自身页：生效配置、库状态、自监控，同上 |
 | `/self-log.html` | 扩展自己的日志页（结构化、按级别配色；手动刷新） |
 | `/app.css` `/app.js` | 各页面共享的样式与脚本 |
@@ -172,8 +178,6 @@ curl.exe -H "X-Otel-Store-Token: <dataDir>/otelstore.token 里的内容" http://
 > 各条线仍然是分开的，只是标签暂时读不懂。
 > ② 读口**不开 CORS**，所以那个页面要单独打开，不能从别处 fetch。
 
-下一阶段的形态是补齐其余端点（含 Prometheus 与载荷详情），届时读口相关配置全部生效：
-
 端口被占用时自动退到随机端口并在日志里报实际值 —— **端口冲突不会让应用启动失败**。
 
 ## 配置
@@ -194,16 +198,13 @@ curl.exe -H "X-Otel-Store-Token: <dataDir>/otelstore.token 里的内容" http://
 | `rows.traces` / `rows.logs` / `rows.metrics` | 200000 | 表头行水位，超出按最旧淘汰。三个信号各自独立；metrics 行更轻，但未实测前不猜更小的值 |
 | `queue.capacity` | 4096 | **每条信号**各自的有界队列深度；满了就丢弃并计数，不阻塞 |
 
-标「未生效」的那几项不是配置坏了，是**读口本身还没实现** —— 它们现在以默认值生效，
-HTTP 阶段接上后立刻可用。
-
 ## 代码分层
 
 ```
 io.github.fulizhe.otelstore
 ├── core      与 OTel 无关：配置、存储、统计
 ├── agentext  OTel 接入：SPI provider 与三条信号管线
-└── readout   读口：JMX、HTTP、Prometheus 渲染（**目前只有 JMX**）
+└── readout   读口：HTTP 页面 / JSON、Prometheus 文本、JMX
 ```
 
 `core` 不许 import 任何 `io.opentelemetry.*` —— 存储层与采集端解耦，是它能独立复用的唯一保证。
@@ -228,7 +229,12 @@ agentext/{OtelAttributes,ResourceMapper,
           SpanMapper,LogMapper,MetricMapper}
                                            OTel → core 入参 + OTLP protobuf 载荷
 
+readout/http/HttpReadout                  一个端口、只注册 GET/HEAD；端点清单封闭
+readout/http/{Json,PrometheusText,
+              MetricDetail,ReadoutAccess} JSON 手写编码 / Prometheus 渲染 / 指标详情 / 兜底访问控制
+readout/ReadoutQueries                    读口查询：列表 / 详情 / 拓扑 / 汇总
 readout/TextRenderer                      快照 → 缩进文本
+readout/payload/PayloadDecoder            表头 + 环形载荷 → 解码后的 OTLP
 readout/jmx/{LocalStoreSummaryMBean,LocalStoreSummary,JmxReadout}
                                            JMX 读口：属性只有 String / int
 ```
@@ -246,6 +252,9 @@ readout/jmx/{LocalStoreSummaryMBean,LocalStoreSummary,JmxReadout}
 - [ADR-3 "数据少了"有五种形态，各计各的](docs/adr/adr-03-four-ways-data-goes-missing.md)
 - [ADR-4 H2 内存模式、存储随进程存活](docs/adr/adr-04-h2-in-memory-and-reset-on-startup.md)
 - [ADR-5 三方依赖 shade 进扩展 jar](docs/adr/adr-05-shade-third-party-deps-into-extension-jar.md)
+- [ADR-6 HTTP 读口只开一个端口，端点清单封闭](docs/adr/adr-06-readout-http-surface.md)
+- [ADR-7 demo-app 依赖全部内嵌，MySQL 例外且降级不崩](docs/adr/adr-07-demo-app-embedded-deps-except-mysql.md)
+- [ADR-8 依赖拓扑图按组件级聚合](docs/adr/adr-08-dependency-topology.md)
 
 **存储的性质：随进程存活，重启即清空**（[ADR-4](docs/adr/adr-04-h2-in-memory-and-reset-on-startup.md)）。
 内存模式不落盘、不碰文件锁，代价是重启后看不到之前的 trace 与指标 —— 这是声明的性质，不是缺陷。
