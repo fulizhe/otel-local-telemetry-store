@@ -78,7 +78,7 @@
   <h1>otel-local-telemetry-store · 演示控制台</h1>
   <div class="sub">
     本页只负责<b>造信号</b>与显示<b>本应用造了多少</b>。
-    信号已经真的落库了，但读口只有 JMX，<span class="pill">本页暂时读不到</span>
+    信号已经真的落库了 —— 看数据点最下面那张卡片里的 <b>读口</b> 地址。
   </div>
 </header>
 
@@ -139,22 +139,16 @@
   </div>
 
   <div class="card" style="margin-top:16px">
-    <h2>存储读口</h2>
-    <div class="note">
-      <b>存储已经能用了，但只有 JMX 那条读口。</b>本页读不到它 ——
-      HTTP 读口是下一阶段的事。数据确实落库了，查看方式：<br><br>
-      <code>jconsole</code> 连本进程 → MBeans → <code>io.github.fulizhe.otelstore</code> →
-      <code>LocalStoreSummary</code>，下面四个直接可点：<br>
-      <code>summary</code>（全量计数）· <code>recentSpans(10)</code>（最近 10 条 span 表头）·
-      <code>spansOfTrace(&lt;trace_id&gt;)</code>（按 trace 取回全部 span）·
-      <code>spanPayloadHex(&lt;id&gt;)</code>（读回单条的环形载荷）。<br><br>
-      <b>对账：</b>上表的条数应当与 <code>spanRows()</code> 对得上，差额来自采样与丢弃
-      （head sampling 与 SDK 截断在原理上不可计数，只能这样对照发现）。<br><br>
-      <b>跨源已经定了：</b>HTTP 读口做完后<b>浏览器直接打开读口那侧</b>（<code>http://&lt;host&gt;:17890/</code>），
-      读口<b>不开 CORS</b>、本页<b>不加代理</b> —— 代价是那个页面不在本页导航里、要另开标签页，
-      换来的是少一个开放面（开 CORS 等于允许任意站点读你的 trace）。
-      实际端口若因冲突退到了随机值，会写在 <code>otel-local-telemetry-store/otelstore.port</code> 与启动日志里。
-    </div>
+    <h2>读口 —— 看数据的地方</h2>
+    <p>
+      读口页面（span / 日志 / 指标 / 自监控）<b>不在本页里</b>：读口不开 CORS、本页不加代理，
+      所以只能<b>点过去、另开一个标签页</b>。代价是少一个开放面 —— 开 CORS 等于允许任意站点读你的 trace。
+    </p>
+    <div id="readout-box" class="note">读取中…</div>
+    <p style="margin-top:12px">
+      端口默认 <code>17890</code>，被占时读口会<b>退让到随机端口</b>并写进端口文件 ——
+      所以地址以这里显示的为准，别只记 17890。
+    </p>
   </div>
 
 </div>
@@ -239,6 +233,32 @@ async function refresh() {
 
 refresh();
 setInterval(refresh, 2000);
+
+// 读口地址：从扩展写下的端口文件里读。端口退让时这里拿到的是退让后的值，
+// 所以刷新它是有意义的 —— 不能只显示一个写死的 17890。
+async function refreshReadout() {
+  const box = $('readout-box');
+  try {
+    const r = await (await fetch('/demo/readout')).json();
+    if (r.found) {
+      box.className = 'note';
+      box.innerHTML =
+        `<a href="${r.url}" target="_blank" rel="noopener"`
+        + ` style="font-size:16px;color:var(--accent)">${r.url}</a>`
+        + `<br><span style="color:var(--dim)">${r.detail} · 端口文件 <code>${r.portFile}</code></span>`;
+    } else {
+      box.className = 'note pending';
+      box.innerHTML = `<b>还没找到读口端口</b><br>${r.detail}`
+        + `<br><span style="color:var(--dim)">端口文件 <code>${r.portFile}</code></span>`;
+    }
+  } catch (e) {
+    box.className = 'note pending';
+    box.textContent = '读取读口地址失败：' + e;
+  }
+}
+refreshReadout();
+setInterval(refreshReadout, 2000);
+
 </script>
 </body>
 </html>

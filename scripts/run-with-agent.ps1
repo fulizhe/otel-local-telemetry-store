@@ -107,9 +107,33 @@ $args = @(
 $p = Start-Process -FilePath $java -ArgumentList $args -WorkingDirectory $demoDir `
      -RedirectStandardOutput $logFile -RedirectStandardError $errFile -PassThru -NoNewWindow
 
+# ---- 读口实际端口 -------------------------------------------------------------
+# 扩展在 premain 阶段就把实际端口写进 <dataDir>/otelstore.port（ADR-6 第一节）。
+# **端口被占时读口会退让到随机端口** —— 所以这里读文件，而不是写死 17890；
+# 否则人按 17890 去访问会连不上，还以为读口没起来。
+# 两边的 cwd 都是 $demoDir，扩展的默认 dataDir 就是它下面的 otel-local-telemetry-store。
+$portFile = Join-Path $demoDir 'otel-local-telemetry-store\otelstore.port'
+$readoutPort = $null
+for ($i = 0; $i -lt 25 -and -not $readoutPort; $i++) {
+    Start-Sleep -Milliseconds 200
+    if (Test-Path -LiteralPath $portFile) {
+        $v = (Get-Content -LiteralPath $portFile -Raw -ErrorAction SilentlyContinue)
+        if ($v -and $v.Trim() -match '^\d+$') { $readoutPort = [int]$v.Trim() }
+    }
+}
+
 Write-Host ""
 Write-Host "  PID      $($p.Id)" -ForegroundColor Green
 Write-Host "  页面     http://localhost:$Port/" -ForegroundColor Green
+if ($readoutPort) {
+    Write-Host "  读口     http://localhost:$readoutPort/    （看数据的地方；端口文件 $portFile）" -ForegroundColor Green
+    if ($readoutPort -ne 17890) {
+        Write-Host "           注意：不是默认的 17890 —— 启动时被占，读口退让了。" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  读口     端口文件还没出现（$portFile）" -ForegroundColor Yellow
+    Write-Host "           稍等看扩展日志里的 httpReadout=on 那行；若用 -Dotel.localstore.dataDir 改过目录，以那里为准。" -ForegroundColor Yellow
+}
 Write-Host "  扩展 jar $($libJar.Name)" -ForegroundColor DarkGray
 Write-Host "  日志     $logFile" -ForegroundColor DarkGray
 Write-Host ""

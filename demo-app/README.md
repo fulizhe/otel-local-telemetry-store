@@ -26,6 +26,12 @@ java -jar target/otel-local-telemetry-store-demo-0.1.0-SNAPSHOT.jar
 - 三张卡片分别造 traces / logs / metrics，各有一个按钮
 - 一张卡片发真实 HTTP 请求（server span 由 agent 的 Web 仪表化产生，不走我们的代码）
 - 下方「本应用已产生的信号」每 2 秒自动刷新，六个计数
+- 最下面一张 **读口** 卡片：给出读口页面的**实际地址**（读扩展写的端口文件），点过去另开标签页看数据
+
+**为什么读口地址要动态读**：读口默认在 17890，但被占时会**退让到随机端口**；
+写死 17890 的话退让之后人按老地址访问会连不上，还以为读口坏了。
+`scripts/run-with-agent.ps1` 起完后也会把同一份实际地址打在控制台上。
+（读口**不开 CORS**，所以本页只能给链接、不能 iframe/fetch —— 这是刻意的取舍。）
 
 手动验证一条（**用 `curl.exe --noproxy "*"`**，本机设了代理，`Invoke-RestMethod` 会超时）：
 
@@ -48,6 +54,7 @@ curl.exe --noproxy "*" -X POST "http://localhost:18081/demo/spans?count=3&childP
 | `POST /demo/metrics?count=` | 一个计数器 + 一个直方图 | 指标点数 = count × 2 |
 | `GET /demo/work?ms=` | 一次真实请求，sleep 指定毫秒 | 由 agent 产生 server span |
 | `GET /demo/stats` | 本应用造了多少（六个计数 + uptime + 五跳各多少/失败多少 + 每秒计数） | 断言的期望值来源 |
+| `GET /demo/readout` | **读口在哪**（黄页）：读扩展写的 `<dataDir>/otelstore.port`，给出可点地址 | 端口退让后也能找到读口 |
 | `POST /demo/reset` | 计数清零 | — |
 | `GET /demo/deps/status` | 五项依赖的 `ready` / `detail` / `embedded` | 少的那一跳要能提前看到 |
 | `POST /demo/deps/{h2,redis,kafka,grpc,mysql}` | 各打一跳 | 返回**当前 traceId** |
@@ -212,7 +219,8 @@ demo-app/
     │   │   │   └── DepsDemoService.java      调用 + 降级响应（**不开自己的 span**）
     │   │   └── web/
     │   │       ├── DemoSignalController.java 造信号的全部端点
-    │   │       └── DepsDemoController.java   /demo/deps/*
+    │   │       ├── DepsDemoController.java   /demo/deps/*
+    │   │       └── ReadoutLinkController.java /demo/readout（读口黄页：读扩展写的 .port 文件）
     │   └── resources/
     │       ├── application.yml               端口 18081、日志格式
     │       └── static/index.html             控制台页面（无构建步骤，纯静态）
