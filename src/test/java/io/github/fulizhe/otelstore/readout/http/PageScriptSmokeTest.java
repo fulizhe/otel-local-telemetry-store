@@ -275,37 +275,41 @@ final Exec r = exec(node, script.toString());
             + "  detail: { flavor: 'explicit', leBoundaries: ['2.0','+Inf'], cumulative: [3,3] } }];\n"
             // ---- 调用链瀑布的桩数据。必须是**一批有多级父子关系**的 span，不能只给一行：
             // 只给一行的话"条数等于 span 数""父子缩进"这两条都测不到（它们要多个才成立）。
+            //
+            // **kind 用 OTLP proto 的数值（INTERNAL=1 … CONSUMER=5），不是 SDK 的 ordinal**
+            // （0-based，差一位）。真机验收就是靠这个差一位发现整条链颜色错位的 ——
+            // 桩数据若按 0-based 写，就会把这个 bug 一起"测绿"。
             + "var TRACE_SPANS = buildTrace();\n"
             + "function buildTrace() {\n"
             + "  var t0 = 1700000000000000000;\n"
             + "  return [\n"
-            // 根：Tomcat 的 server span
+            // 根：Tomcat 的 server span（proto 2 = SERVER）
             + "    { id: 1, traceId: 'T', spanId: 's1', parentSpanId: '', name: 'GET /demo/deps/all',\n"
-            + "      kind: 1, startTime: t0, endTime: t0 + 90000000,\n"
+            + "      kind: 2, startTime: t0, endTime: t0 + 90000000,\n"
             + "      scopeName: 'io.opentelemetry.tomcat-10.0' },\n"
             + "    { id: 2, traceId: 'T', spanId: 's2', parentSpanId: 's1',\n"
-            + "      name: 'SELECT item, amount FROM demo_h2_order', kind: 2,\n"
+            + "      name: 'SELECT item, amount FROM demo_h2_order', kind: 3,\n"
             + "      startTime: t0 + 5000000, endTime: t0 + 15000000,\n"
             + "      scopeName: 'io.opentelemetry.jdbc' },\n"
-            + "    { id: 3, traceId: 'T', spanId: 's3', parentSpanId: 's1', name: 'SET', kind: 2,\n"
+            + "    { id: 3, traceId: 'T', spanId: 's3', parentSpanId: 's1', name: 'SET', kind: 3,\n"
             + "      startTime: t0 + 16000000, endTime: t0 + 22000000,\n"
             + "      scopeName: 'io.opentelemetry.jedis-3.0' },\n"
             + "    { id: 4, traceId: 'T', spanId: 's4', parentSpanId: 's1', name: 'send otelstore-demo',\n"
-            + "      kind: 3, startTime: t0 + 23000000, endTime: t0 + 33000000,\n"
+            + "      kind: 4, startTime: t0 + 23000000, endTime: t0 + 33000000,\n"
             + "      scopeName: 'io.opentelemetry.kafka-clients-2.6' },\n"
             + "    { id: 5, traceId: 'T', spanId: 's5', parentSpanId: 's1', name: 'otelstore.Demo/Echo',\n"
-            + "      kind: 2, startTime: t0 + 34000000, endTime: t0 + 44000000,\n"
+            + "      kind: 3, startTime: t0 + 34000000, endTime: t0 + 44000000,\n"
             + "      scopeName: 'io.opentelemetry.grpc-1.6' },\n"
             // 孙子：gRPC 的 server span，用来验"缩进多一级"
             + "    { id: 6, traceId: 'T', spanId: 's6', parentSpanId: 's5', name: 'otelstore.Demo/Echo',\n"
-            + "      kind: 1, startTime: t0 + 36000000, endTime: t0 + 42000000,\n"
+            + "      kind: 2, startTime: t0 + 36000000, endTime: t0 + 42000000,\n"
             + "      scopeName: 'io.opentelemetry.grpc-1.6' },\n"
-            + "    { id: 7, traceId: 'T', spanId: 's7', parentSpanId: 's1', name: 'poll', kind: 4,\n"
+            + "    { id: 7, traceId: 'T', spanId: 's7', parentSpanId: 's1', name: 'poll', kind: 5,\n"
             + "      startTime: t0 + 45000000, endTime: t0 + 50000000,\n"
             + "      scopeName: 'io.opentelemetry.kafka-clients-2.6' },\n"
             // 孤儿：父 span 不在结果集里（被行数水位淘汰）—— 必须仍画出来并标明
             + "    { id: 8, traceId: 'T', spanId: 's8', parentSpanId: 'gone-parent', name: 'orphan',\n"
-            + "      kind: 2, startTime: t0 + 51000000, endTime: t0 + 56000000,\n"
+            + "      kind: 3, startTime: t0 + 51000000, endTime: t0 + 56000000,\n"
             + "      scopeName: 'io.opentelemetry.jdbc' }\n"
             + "  ];\n"
             + "}\n"
@@ -313,7 +317,7 @@ final Exec r = exec(node, script.toString());
             + "  var out = [];\n"
             + "  for (var i = 0; i < n; i++) {\n"
             + "    out.push({ id: 100 + i, traceId: 'T', spanId: 'm' + i, parentSpanId: '',\n"
-            + "      name: 'span-' + i, kind: 1, startTime: 1700000000000000000 + i * 1000000,\n"
+            + "      name: 'span-' + i, kind: 2, startTime: 1700000000000000000 + i * 1000000,\n"
             + "      endTime: 1700000000000000000 + i * 1000000 + 500000,\n"
             + "      scopeName: 'io.opentelemetry.tomcat' });\n"
             + "  }\n"
@@ -323,7 +327,7 @@ final Exec r = exec(node, script.toString());
             + "  var out = [];\n"
             + "  for (var i = 0; i < n; i++) {\n"
             + "    out.push({ id: 200 + i, traceId: 'T', spanId: 'd' + i,\n"
-            + "      parentSpanId: i === 0 ? '' : 'd' + (i - 1), name: 'deep-' + i, kind: 0,\n"
+            + "      parentSpanId: i === 0 ? '' : 'd' + (i - 1), name: 'deep-' + i, kind: 1,\n"
             + "      startTime: 1700000000000000000, endTime: 1700000000000000000 + 1000000 * (i + 1),\n"
             + "      scopeName: 'io.opentelemetry.tomcat' });\n"
             + "  }\n"
@@ -481,9 +485,19 @@ final Exec r = exec(node, script.toString());
             + "    if (body.indexOf('io.opentelemetry.jedis-3.0') < 0) {\n"
             + "      throw new Error('来源分组没标出来：' + body);\n"
             + "    }\n"
-            // kind 上色：PRODUCER / CONSUMER 各一色。这两种只有真的打了 Kafka 那一跳才见得到
-            + "    if (body.indexOf('#d29922') < 0) { throw new Error('PRODUCER 没上色：' + body); }\n"
-            + "    if (body.indexOf('#a371f7') < 0) { throw new Error('CONSUMER 没上色：' + body); }\n"
+            // kind 上色：**只看「条」的 fill，不看整段 HTML**。
+            // 曾经这里写的是 body.indexOf('#a371f7') —— 而图例里恒有这五种颜色的色块，
+            // 于是那条断言**永远为真**：把 kind 取值基准改错（proto 数值当成 SDK ordinal，
+            // 差一位）它也照样绿。真机上整条链颜色错位就是这么漏过去的。
+            + "    var fills = [], mf, ref = /class=\"wf-bar\"[^>]*fill=\"(#[0-9a-fA-F]+)\"/g;\n"
+            + "    while ((mf = ref.exec(body)) !== null) { fills.push(mf[1]); }\n"
+            + "    var need = { '#4c9aff': 'SERVER', '#3fb950': 'CLIENT',"
+            + " '#d29922': 'PRODUCER', '#a371f7': 'CONSUMER' };\n"
+            + "    for (var col in need) {\n"
+            + "      if (fills.indexOf(col) < 0) {\n"
+            + "        throw new Error('没有一条画成 ' + need[col] + ' 色（kind 取值基准错了？）：' + fills.join(','));\n"
+            + "      }\n"
+            + "    }\n"
             // 三条"不编"纪律之一：孤儿 parent 必须被标出来
             + "    if (body.indexOf('父 span 不在库里') < 0) {\n"
             + "      throw new Error('父不在结果集里却没标明：' + body);\n"
@@ -501,7 +515,7 @@ final Exec r = exec(node, script.toString());
             + "      if (!overlayOpen()) { throw new Error('点瀑布里的条没打开详情弹框'); }\n"
             // 单 span：**不画 SVG**，且明说画不出（照抄趋势图那条自我约束的形状）
             + "      TRACE_SPANS = [{ id: 9, traceId: 'T', spanId: 'x1', parentSpanId: '',\n"
-            + "        name: 'only', kind: 1, startTime: 1700000000000000000,\n"
+            + "        name: 'only', kind: 2, startTime: 1700000000000000000,\n"
             + "        endTime: 1700000000100000000, scopeName: 'io.opentelemetry.tomcat' }];\n"
             + "      Otl.openWaterfall('T');\n"
             + "      setTimeout(function () {\n"

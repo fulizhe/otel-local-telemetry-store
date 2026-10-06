@@ -1021,17 +1021,23 @@ var Otl = (function () {
   // ---------------- 调用链瀑布（ADR-6 第十五节）
 
   /**
-   * span 的 kind（OTel SpanKind 的 int）→ 名字。
+   * span 的 kind → 名字。
    *
-   * <p><b>与 {@link kindName} 不是一个东西</b>：那个是**指标**的形态（Gauge/Sum/Histogram），
-   * 这个是 **span 的角色**。两个都叫 kind，混用会把指标页的说明串到瀑布上。
+   * <p><b>取值是 OTLP proto 的枚举，不是 SDK 的 {@code SpanKind.ordinal()}</b>：
+   * proto 里 {@code SPAN_KIND_UNSPECIFIED=0}，之后 {@code INTERNAL=1} … {@code CONSUMER=5}；
+   * 而 SDK 的枚举是 {@code INTERNAL=0} … {@code CONSUMER=4}。<b>两者差一位。</b>
+   *
+   * <p>这不是从文档抄来的，是真机验收抓出来的：按 0-based 解释时整条链的颜色**全体错位一级**
+   * —— 根 SERVER 被画成 CLIENT 色、Kafka 的 publish 被画成 CONSUMER 色。
+   * 表头 {@code kind} 列的契约见 {@code SpanMapper.kindNumber}：
+   * "与 payload 里同一个 OTLP 枚举的数值（INTERNAL=1 … CONSUMER=5）"。
    */
   function spanKindName(k) {
-    if (k === 1) { return 'SERVER'; }
-    if (k === 2) { return 'CLIENT'; }
-    if (k === 3) { return 'PRODUCER'; }
-    if (k === 4) { return 'CONSUMER'; }
-    return 'INTERNAL';
+    if (k === 2) { return 'SERVER'; }
+    if (k === 3) { return 'CLIENT'; }
+    if (k === 4) { return 'PRODUCER'; }
+    if (k === 5) { return 'CONSUMER'; }
+    return 'INTERNAL';   // 1，以及 0/缺失（proto 的 UNSPECIFIED）
   }
 
   /** 按 kind 上色 —— 这是 SkyWalking 拓扑图的视觉语言：一眼看出进程边界在哪。 */

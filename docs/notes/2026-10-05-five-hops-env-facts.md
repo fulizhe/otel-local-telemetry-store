@@ -128,6 +128,21 @@ demo-app-stability-mysql-1   mysql:8.0   0.0.0.0:13306->3306/tcp   Up (healthy)
 差点得出"端口是空的"这个错结论；`netstat -ano` 立刻给出 LISTENING 的 pid。
 **排查端口占用以 `netstat` 为准。**
 
+### 4. `kind` 列是 OTLP proto 枚举，比 SDK 的 ordinal 大 1
+
+同一次真机验收里，瀑布图的颜色**全体错位一级**：根 SERVER 画成 CLIENT 色、
+Kafka 的 publish 画成 CONSUMER 色。原始值（`/api/traces?traceId=`）：
+tomcat 根 `kind=2`、jdbc / jedis / grpc-client `kind=3`、kafka publish `kind=4`、
+kafka consume `kind=5`、grpc-server `kind=2`。
+
+- **`SpanMapper.kindNumber` 存的是 OTLP proto 枚举**（`INTERNAL=1 … CONSUMER=5`，见该类注释），
+  而 handoff/spec 当时按 **SDK 的 `SpanKind.ordinal()`**（`INTERNAL=0 … CONSUMER=4`）描述 —— **差一位**。
+- 表头 `kind` 列从来没被任何页面显示过，所以这个差一位一直没暴露；瀑布按 kind 上色是第一个消费它的地方。
+- **修在读口侧**（`app.js` 的 `spanKindName`），不动存储：列的契约是 proto，payload 里也是 proto。
+- **教训**：冒烟测试原来只查"整段 HTML 里有没有某个颜色字符串"，
+  而**图例里恒有那五种颜色** → 断言永远为真。改成只解析**条的 `fill`** 之后，
+  把基准改错会立刻红。
+
 ## 本机在跑的其它追踪栈（不参与本项目，仅避免撞端口 / 误判）
 
 `jaeger-all-in-one`（16686 UI、4317/4318 OTLP）、`sw-h2`（SkyWalking OAP 9.4.0，8082/1521）、

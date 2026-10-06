@@ -194,8 +194,13 @@ MySQL 的线协议层 agent 也没仪表化）→ 图上两条长得一模一样
 
 `/api/traces?traceId=` 按 `start_time ASC` 返回该 trace 的全部 span，且响应里已含
 `spanId` / `parentSpanId` / `startTime` / `endTime` / `kind` / `scopeName` / `name`。
-`kind` 是 OTel SpanKind 的 int（0 INTERNAL / 1 SERVER / 2 CLIENT / 3 PRODUCER / 4 CONSUMER），
-可直接拿来上色。
+`kind` 是 **OTLP proto** 的枚举数值：`0 UNSPECIFIED / 1 INTERNAL / 2 SERVER / 3 CLIENT / 4 PRODUCER / 5 CONSUMER`，
+可直接拿来上色。（表头 `kind` 列的契约见 `SpanMapper.kindNumber`。）
+
+> **实现期更正（2026-10-06）**：本文原写"OTel SpanKind 的 int（0 INTERNAL / 1 SERVER …）"——
+> 那是 **SDK** 的 `ordinal()`，与落库的 **proto** 枚举**差一位**。按 0-based 上色时整条链
+> 颜色全体错位一级（根 SERVER 画成 CLIENT 色、Kafka 的 publish 画成 CONSUMER 色），
+> 真机验收才看出来。已按 proto 基准修 `spanKindName`，并在冒烟测试里钉住四种 kind 的颜色都出现。
 
 **这是本段最重要的约束**：段 B 是**纯前端**改动。凡是需要动存储层才能画出来的东西，
 一律先判断能不能用现有字段凑出来；不能就把这条记成后置增强，不要在段 B 里顺手改 ADR-2。
