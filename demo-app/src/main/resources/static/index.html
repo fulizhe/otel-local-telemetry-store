@@ -79,6 +79,7 @@
   <div class="sub">
     本页只负责<b>造信号</b>与显示<b>本应用造了多少</b>。
     信号已经真的落库了 —— 看数据点最下面那张卡片里的 <b>读口</b> 地址。
+    · <a href="urls.html" style="color:var(--accent);text-decoration:none">测试入口（黄页）→</a>
   </div>
 </header>
 
@@ -242,10 +243,16 @@ async function refreshReadout() {
     const r = await (await fetch('/demo/readout')).json();
     if (r.found) {
       box.className = 'note';
+      const base = r.url.endsWith('/') ? r.url : r.url + '/';
       box.innerHTML =
-        `<a href="${r.url}" target="_blank" rel="noopener"`
-        + ` style="font-size:16px;color:var(--accent)">${r.url}</a>`
-        + `<br><span style="color:var(--dim)">${r.detail} · 端口文件 <code>${r.portFile}</code></span>`;
+        `<a href="${base}" target="_blank" rel="noopener"`
+        + ` style="font-size:16px;color:var(--accent)">${base}</a>`
+        + `<br><span style="color:var(--dim)">${r.detail} · 端口文件 <code>${r.portFile}</code></span>`
+        + `<br><span style="display:inline-block;margin-top:8px">直接看：`
+        + `<a href="${base}topology.html" target="_blank" rel="noopener" style="color:var(--accent)">拓扑</a> · `
+        + `<a href="${base}traces.html" target="_blank" rel="noopener" style="color:var(--accent)">span</a> · `
+        + `<a href="${base}self-log.html" target="_blank" rel="noopener" style="color:var(--accent)">扩展日志</a>`
+        + `</span>`;
     } else {
       box.className = 'note pending';
       box.innerHTML = `<b>还没找到读口端口</b><br>${r.detail}`
