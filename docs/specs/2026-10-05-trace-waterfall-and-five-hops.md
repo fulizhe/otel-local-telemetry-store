@@ -144,11 +144,16 @@ CLIENT span 就会自动挂上去。若 demo-app 自己开 span，测的就是�
 
 **A.3 Kafka 怎么起**
 
-`org.apache.kafka:kafka_2.13` 的 **KRaft 单节点**模式（2.7.1，字节码实测 52）。
-启动前用存储工具格式化到临时目录的 `log.dirs`。它是本项目**唯一**需要从
-Maven Central 新下载的包（Docker Hub 不通的直接后果）。
+`org.apache.kafka:kafka_2.13` 的**内嵌 broker + 内嵌 ZooKeeper**（ZK 模式，2.8.2，字节码实测 52）。
+它是本项目**唯一**需要从 Maven Central 新下载的包（Docker Hub 不通的直接后果）。
 
 依赖冲突要处理：broker 包会把 `log4j-slf4j-impl` 与 logback 一起拖进来，必须排除。
+
+> **实现期更正（2026-10-06）**：本文原写"KRaft 单节点（2.7.1）"，实测不成立 ——
+> 2.7.1 里根本没有 in-process KRaft broker（`KafkaRaftServer` / `StorageTool` 是 2.8 才有的类），
+> 而 2.8.2 的 KRaft broker 在 **Windows 上起不来**（`quorum-state.tmp` 的 rename 撞上
+> Windows 的文件占用语义）。改用 ZK 模式，仍然零外部进程，ADR-7 的"MySQL 是唯一例外"未被推翻。
+> 实测数据见 [`../notes/2026-10-05-five-hops-env-facts.md`](../notes/2026-10-05-five-hops-env-facts.md)。
 
 **A.4 MySQL 是唯一外部依赖**
 
