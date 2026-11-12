@@ -1,0 +1,81 @@
+{
+  "ok": true,
+  "endpoint": "http://127.0.0.1:17890/api/summary",
+  "dataDir": "D:\\gitRepository\\otel-local-telemetry-store\\demo-app\\otel-local-telemetry-store",
+  "pass": 12,
+  "total": 12,
+  "checks": [
+    {
+      "id": "http_200",
+      "title": "返回 200",
+      "pass": true,
+      "detail": "status=200"
+    },
+    {
+      "id": "json_parse",
+      "title": "体是合法 JSON",
+      "pass": true,
+      "detail": "bytes=2775"
+    },
+    {
+      "id": "keys",
+      "title": "顶层键齐全",
+      "pass": true,
+      "detail": "all present"
+    },
+    {
+      "id": "store_present",
+      "title": "store 非空",
+      "pass": true,
+      "detail": "ok"
+    },
+    {
+      "id": "rows_nonneg",
+      "title": "三个行数非负",
+      "pass": true,
+      "detail": "spans=67 logs=38 metrics=530"
+    },
+    {
+      "id": "evicted_shape",
+      "title": "evicted 三分项齐全",
+      "pass": true,
+      "detail": "spans=0 logs=0 metrics=0"
+    },
+    {
+      "id": "store_errors",
+      "title": "storeErrors 为 0",
+      "pass": true,
+      "detail": "storeErrors=0"
+    },
+    {
+      "id": "degraded_null",
+      "title": "没有降级原因",
+      "pass": true,
+      "detail": "null"
+    },
+    {
+      "id": "token_masked",
+      "title": "token 只出现掩码",
+      "pass": true,
+      "detail": "<generated-at-startup>"
+    },
+    {
+      "id": "agent_version",
+      "title": "agentVersion 指向 agent",
+      "pass": true,
+      "detail": "opentelemetry-javaagent-2.32.0.jar"
+    },
+    {
+      "id": "actual_port",
+      "title": "actualPort 与请求端口一致",
+      "pass": true,
+      "detail": "expected=17890 actual=17890"
+    },
+    {
+      "id": "uptime",
+      "title": "startedAt + uptimeMs 贴近当前时间",
+      "pass": true,
+      "detail": "driftMs=55 uptimeMs=63050"
+    }
+  ]
+}
