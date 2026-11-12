@@ -193,3 +193,18 @@ io.github.fulizhe.otelstore
 - **事实与实测数据**（跑出来的数字、版本号、类名、字段清单）→ `docs/notes/`。
 - 动代码前先翻 [`docs/adr/index.md`](docs/adr/index.md)。有相关决策就照它做；
   决策与现实冲突时**先改决策**，不偷偷改代码。
+
+## 技能：pstack（仅本项目）
+
+`.opencode/skills/` 是 pstack 的项目内安装，只对本仓库生效；全局 `~/.claude/skills/`
+那套 matt 技能本项目**不用**。要 TDD、讲解、架构评审这类能力时用 pstack 的版本，
+入口是 `poteto-mode`。怎么用见 [`docs/pstack-guide.md`](docs/pstack-guide.md)。
+
+- 与 matt 撞名的两条已改名：`tdd` → **`pstack-tdd`**、`teach` → **`pstack-teach`**，
+  技能正文里的交叉引用一并改过。
+- `.opencode/agents/` 里是从 pstack 转过来的两个子代理：`poteto-agent`（`poteto-mode`
+  的委派工人）与 `comment-sicko`（只读的注释审查者，禁编辑）。
+- pstack 原文按 Cursor 写。遇到 Cursor 专有工具名，按 `poteto-mode` 的 Harness 一节
+  映射到 OpenCode（`AskQuestion` → `question`，`Task` → `subagent`）。
+- `statechart/` 自带 2.8 MB 的 TLA+ 测试语料，除正式建模外不必翻。
+
