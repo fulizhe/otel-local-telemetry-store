@@ -1,0 +1,52 @@
+{
+  "ok": true,
+  "command": "histogram",
+  "endpoint": "http://127.0.0.1:17890/api/metrics?limit=2000",
+  "dataDir": "D:\\gitRepository\\otel-local-telemetry-store\\demo-app\\otel-local-telemetry-store",
+  "pass": 7,
+  "total": 7,
+  "checks": [
+    {
+      "id": "http_200",
+      "title": "返回 200",
+      "pass": true,
+      "detail": "status=200"
+    },
+    {
+      "id": "json_parse",
+      "title": "体是合法 JSON",
+      "pass": true,
+      "detail": "bytes=787907"
+    },
+    {
+      "id": "has_histograms",
+      "title": "至少一条直方图点",
+      "pass": true,
+      "detail": "histograms=191 explicit=191"
+    },
+    {
+      "id": "no_unknown",
+      "title": "没有认不出的 detail",
+      "pass": true,
+      "detail": "0 unknown"
+    },
+    {
+      "id": "explicit_shape",
+      "title": "桶数与边界对得上",
+      "pass": true,
+      "detail": "checked=191"
+    },
+    {
+      "id": "cumulative_monotonic",
+      "title": "累计计数单调不减",
+      "pass": true,
+      "detail": "checked=191"
+    },
+    {
+      "id": "total_matches",
+      "title": "末桶累计等于 metricCount",
+      "pass": true,
+      "detail": "checked=191"
+    }
+  ]
+}

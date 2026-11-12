@@ -1,5 +1,6 @@
 {
   "ok": true,
+  "command": "summary",
   "endpoint": "http://127.0.0.1:17890/api/summary",
   "dataDir": "D:\\gitRepository\\otel-local-telemetry-store\\demo-app\\otel-local-telemetry-store",
   "pass": 12,
@@ -15,7 +16,7 @@
       "id": "json_parse",
       "title": "体是合法 JSON",
       "pass": true,
-      "detail": "bytes=2775"
+      "detail": "bytes=2783"
     },
     {
       "id": "keys",
@@ -33,7 +34,7 @@
       "id": "rows_nonneg",
       "title": "三个行数非负",
       "pass": true,
-      "detail": "spans=67 logs=38 metrics=530"
+      "detail": "spans=920 logs=38 metrics=3730"
     },
     {
       "id": "evicted_shape",
@@ -75,7 +76,7 @@
       "id": "uptime",
       "title": "startedAt + uptimeMs 贴近当前时间",
       "pass": true,
-      "detail": "driftMs=55 uptimeMs=63050"
+      "detail": "driftMs=70 uptimeMs=505032"
     }
   ]
 }

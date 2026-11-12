@@ -1,0 +1,70 @@
+{
+  "ok": true,
+  "command": "self-log",
+  "endpoint": "http://127.0.0.1:17890/api/self-log?lines=5",
+  "dataDir": "D:\\gitRepository\\otel-local-telemetry-store\\demo-app\\otel-local-telemetry-store",
+  "pass": 10,
+  "total": 10,
+  "checks": [
+    {
+      "id": "http_200",
+      "title": "返回 200",
+      "pass": true,
+      "detail": "status=200"
+    },
+    {
+      "id": "json_parse",
+      "title": "体是合法 JSON",
+      "pass": true,
+      "detail": "bytes=1844"
+    },
+    {
+      "id": "shape",
+      "title": "lines / file / note 齐全",
+      "pass": true,
+      "detail": "file=otelstore.log note=[]"
+    },
+    {
+      "id": "line_count",
+      "title": "行数不超过请求值",
+      "pass": true,
+      "detail": "lines=5 requested=5"
+    },
+    {
+      "id": "line_format",
+      "title": "每行是扩展自己的格式",
+      "pass": true,
+      "detail": "checked=5"
+    },
+    {
+      "id": "origin",
+      "title": "行里有本扩展的标识",
+      "pass": true,
+      "detail": "matched=5/5"
+    },
+    {
+      "id": "note_consistency",
+      "title": "空行数与 note 互斥",
+      "pass": true,
+      "detail": "lines=5 noteLen=0"
+    },
+    {
+      "id": "clamp_http",
+      "title": "封顶请求返回 200",
+      "pass": true,
+      "detail": "status=200"
+    },
+    {
+      "id": "clamp_limit",
+      "title": "封顶不超过 500 行",
+      "pass": true,
+      "detail": "lines=416 cap=500"
+    },
+    {
+      "id": "bad_param_fallback",
+      "title": "非数字参数回落缺省 100 行",
+      "pass": true,
+      "detail": "status=200 lines=100"
+    }
+  ]
+}

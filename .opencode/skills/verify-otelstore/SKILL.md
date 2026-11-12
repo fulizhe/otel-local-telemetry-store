@@ -25,13 +25,19 @@ pwsh -NoProfile -File scripts/run-with-agent.ps1
 
 ## Drive
 
-在仓库根执行：
+在仓库根执行，第一个参数是子命令：
 
 ```powershell
 pwsh -NoProfile -File .opencode/skills/verify-otelstore/scripts/assert-readout.ps1 summary
-pwsh -NoProfile -File .opencode/skills/verify-otelstore/scripts/assert-readout.ps1 summary -Json
-pwsh -NoProfile -File .opencode/skills/verify-otelstore/scripts/assert-readout.ps1 summary -BaseUrl http://127.0.0.1:17891
+pwsh -NoProfile -File .opencode/skills/verify-otelstore/scripts/assert-readout.ps1 histogram
+pwsh -NoProfile -File .opencode/skills/verify-otelstore/scripts/assert-readout.ps1 self-log -Json
 ```
+
+| 子命令 | 端点 | 检查数 | 需要数据 |
+| --- | --- | --- | --- |
+| `summary` | `/api/summary` | 12，开鉴权 13 | 否 |
+| `histogram` | `/api/metrics?limit=2000` | 7 | 是，先 `POST /demo/metrics` 或等 gRPC 指标 |
+| `self-log` | `/api/self-log` | 10 | 否 |
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
@@ -61,4 +67,4 @@ pwsh -NoProfile -File .opencode/skills/verify-otelstore/scripts/assert-readout.p
 
 ## 功能地图
 
-[`features/README.md`](features/README.md)。目前只有 `summary`。加新端点时先加 feature 文件，再加子命令，别反过来。
+[`features/README.md`](features/README.md)。目前三条：`summary`、`metrics`、`self-log`。加新端点时先加 feature 文件，再加子命令，别反过来。
