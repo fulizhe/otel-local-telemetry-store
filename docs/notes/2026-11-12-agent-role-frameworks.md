@@ -12,13 +12,14 @@
 这类框架是三条线，不是一条：
 
 1. **角色人格型**：BMAD、MetaGPT、ChatDev、CrewAI。每个角色是一份 persona，按阶段交接。
-2. **流程产物型**：OpenSpec、Spec Kit、Kiro、Agent OS。没有角色，靠规格产物推进。
+2. **流程产物型**：OpenSpec、Spec Kit、Kiro、Agent OS，以及 Matt Pocock 的 skills（工单状态机版）。没有 persona，靠规格与工单推进。
 3. **技能触发型**：Superpowers、pstack、Roo Code Boomerang、claude-flow 的 SPARC。角色在运行时派生。
 
-两个常见的归类错误：
+三个常见的归类错误：
 
 - **OpenSpec 不是角色分工**。它按 `change` 目录产出四件套，没有 persona，也没有硬门禁。
 - **Superpowers 不只是"流程"**。它的 `subagent-driven-development` 每个任务派新 subagent，回来过两道评审，这就是分工，只不过角色是运行时生成的。
+- **matt 的 skills 不是"散装小技能"**。主流程是 `grill-with-docs → to-spec → to-tickets → implement`，只是编排交给了 issue tracker 和人，而不是交给 persona。
 
 ## 对照表
 
@@ -31,6 +32,7 @@
 | Superpowers | 运行时派生：实现者 + spec 审查 + 质量审查 | 设计文档、逐任务计划 | 高，技能强制触发 | 单人高 rigor 交付 |
 | pstack | `poteto-mode` 路由 → 剧本 → 委派工人 + 审查技能 | 剧本、决策记录、验证证据 | 中，入口强制 | 已有代码库的日常改动 |
 | OpenSpec | 无角色 | `proposal / specs / design / tasks` | 中，产物契约 | 存量代码，多人多仓 |
+| Matt Pocock skills | 无 persona；工单五态 + 人机 grill | spec、tracer-bullet 工单、`GLOSSARY.md` / ADR | 中，靠技能串 | 存量仓库，想保住控制权 |
 | Spec Kit | 无角色 | constitution / spec / plan / tasks | 高，阶段门 | 新项目起步 |
 | Agent OS | 无角色，先抽代码库规范 | standards + spec | 中 | 规范不统一的存量仓库 |
 | Roo Code | 模式即角色：Architect / Code / Debug / Orchestrator | 子任务摘要 | 中，harness 内置 | 希望上下文强隔离 |
@@ -99,6 +101,39 @@ SDD（spec-driven development），74.7k stars，MIT。
 Stores（beta）允许把规格放独立仓库，实现跨仓规划。
 
 **没有角色分工**，这是它和 BMAD 最本质的区别。
+
+### Matt Pocock skills（工单状态机版）[已读]
+
+<https://github.com/mattpocock/skills>，322.3k stars，MIT。本机全局装在 `~/.claude/skills`；
+本项目按 AGENTS.md 不用，这里只作对比。
+
+README 的定位是反着 BMAD / Spec Kit / GSD 来的：那几家 "own the process"，把控制权收走；
+这套是小、可改、可组合，不绑模型。
+
+主流程写在 `ask-matt` 里，是一条带分支的线：
+
+| 步 | 技能 | 产物 |
+| --- | --- | --- |
+| 对齐 | `/grill-with-docs` | `GLOSSARY.md` + ADR，边走边落 |
+| 原型（可选） | `/handoff` ↔ `/prototype` | 临时目录里的决策答案 |
+| 定规格 | `/to-spec` | 推到 issue tracker，打 `ready-for-agent` |
+| 拆工单 | `/to-tickets` | tracer-bullet 垂直切片，各自声明 blocking edges |
+| 实施 | `/implement` → `/tdd` → `/code-review` | 代码 + 两轴评审 |
+
+分工体现在三处，和 persona 无关：
+
+- **人机分工**：grilling 由 agent 提问、人拍板，但事实归 agent 查（原文 "Finding facts is
+  your job, never the user's"）。
+- **工单角色**：`triage` 是一台状态机，两类 `bug / enhancement`，五态
+  `needs-triage / needs-info / ready-for-agent / ready-for-human / wontfix`。
+- **评审分轴**：`code-review` 把 Standards 与 Spec 拆成并行 subagent，互不污染上下文。
+
+结构上还有一条规矩：技能分 user-invoked（只由人触发，负责编排）与 model-invoked
+（可被自动拉取，承载纪律），前者能调后者，反之不行。pstack 的 `poteto-mode` 与叶子技能
+是同一分层，只是叫法不同。
+
+超大块工作走 `wayfinder`：把"决策"做成工单地图，一次解一张，直到路线清楚。
+本机这份装得比 README 旧，缺 `retro`、`pr`、`implement-spec`。
 
 ### Spec Kit [记忆]
 
@@ -184,6 +219,7 @@ claude-flow 把它做成 hive-mind 式编排，带 queen/worker 角色。本轮�
 - **需求不清楚、从 0 到 1**：角色型。BMAD 的六视角是为了逼出"你没说但必须要"的东西。
 - **存量代码、多人、多仓**：产物型。角色会漂，`proposal.md` 不会。
 - **规范不统一的老仓库**：Agent OS 先抽 standards，再谈流程。
+- **不想让框架接管流程**：matt 的 skills 最轻，代价是仓库先要配 issue tracker（`/setup-matt-pocock-skills`）。
 - **日常单点改动**：技能型，也就是本仓库现在的形态。
 - **单人仓库照搬六角色**：等于六次上下文切换加六份重复读代码，通常不划算，裁成三角色更现实。
 
@@ -195,6 +231,8 @@ claude-flow 把它做成 hive-mind 式编排，带 queen/worker 角色。本轮�
 - 没有角色层：`poteto-agent` 是通用工人，不是架构师或评审。
 - 没有 change 级产物：`docs/specs/` 下两篇是按主题的文档，不是"一次改动一个目录"。
 - `docs/adr/` 记的是决策，不是某次改动的提案。
+- 本机全局还装着 Matt Pocock 的 skills，本项目按 AGENTS.md 明确不用。若只想要它的两个做法
+  （`grilling` 的提问、`to-tickets` 的垂直切片），抽出来写成项目内技能比整套装进来干净。
 
 如果以后要落，三条可裁剪路线：
 
@@ -210,6 +248,7 @@ ADR 与 change 目录的边界在哪"，否则会出现同一件事写三遍。
 - BMAD-METHOD：<https://github.com/bmad-code-org/BMAD-METHOD>
 - MetaGPT：<https://github.com/FoundationAgents/MetaGPT>
 - OpenSpec：<https://github.com/Fission-AI/OpenSpec>
+- Matt Pocock skills：<https://github.com/mattpocock/skills>（站点 <https://aihero.dev/skills>）
 - Spec Kit：<https://github.com/github/spec-kit>
 - Agent OS：<https://github.com/buildermethods/agent-os>
 - Superpowers：<https://github.com/obra/superpowers>
