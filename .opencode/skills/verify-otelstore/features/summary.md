@@ -22,6 +22,13 @@
 pwsh -NoProfile -File .opencode/skills/verify-otelstore/scripts/assert-readout.ps1 summary
 ```
 
+开鉴权、并验端口退让时（22 条）：
+
+```powershell
+pwsh -NoProfile -File .opencode/skills/verify-otelstore/scripts/assert-readout.ps1 summary `
+  -ExpectAuth -ExpectConfiguredPort 17890
+```
+
 断言清单，任何一条失败退出码为 1：
 
 | id | 断言 | 失败通常意味着 |
@@ -39,6 +46,15 @@ pwsh -NoProfile -File .opencode/skills/verify-otelstore/scripts/assert-readout.p
 | `agent_version` | `agentVersion` 含 `opentelemetry` | 没挂 agent，或在没挂 agent 的应用里跑 |
 | `actual_port` | `actualPort` 等于请求地址的端口 | 打到了别的实例 |
 | `uptime` | `startedAt + uptimeMs` 与当前时间相差 5 秒内 | 时钟不对，或字段被缓存过 |
+| `config_port` | `config.port` 是数字；给了 `-ExpectConfiguredPort` 时必须等于它 | 配置快照丢了端口，或这次起的不是你以为的配置 |
+| `port_fallback` | 只在给了 `-ExpectConfiguredPort` 时：`actualPort` 与之不等 | 端口没被真的占住，这条没验到（不是读口的问题） |
+| `auth_mode` | 不带 token 探测：401 记 on，200 记 off；给了 `-ExpectAuth` 时 200 判失败 | `auth=true` 没生效，或鉴权被绕过 |
+| `auth_challenge` | 401 带 `WWW-Authenticate: X-Otel-Store-Token`，体里 `error=unauthorized` | 客户端不知道往哪个头放凭据 |
+| `auth_token_ok` | 带正确 token 返回 200 | token 文件过期（旧进程留下的），或头名写错 |
+| `auth_wrong_token` | 带等长错值返回 401 | 比对逻辑坏了 |
+| `token_file_shape` | `otelstore.token` 无空白、至少 16 字符、与本次请求一致 | token 没落盘，或读到了别的实例的文件 |
+| `token_absent_from_log` | `/api/self-log` 的响应体不含 token | **凭据进了日志**，按安全事故处理 |
+| `log_auth_on` | 就绪那行写着 `auth=on` | 服务端以为自己没开鉴权 |
 
 ## Gotchas
 
@@ -48,3 +64,7 @@ pwsh -NoProfile -File .opencode/skills/verify-otelstore/scripts/assert-readout.p
 - **本机代理会让 `Invoke-RestMethod` 超时。** 脚本走 `curl.exe --noproxy "*"`。
 - **demo-app 的 dataDir 在它自己目录下。** `run-with-agent.ps1` 让两个进程都以 `demo-app` 为 cwd，所以端口文件是 `demo-app/otel-local-telemetry-store/otelstore.port`，不是仓库根下那个。脚本默认按这个顺序找。
 - **401 不是连接失败。** 读 `otelstore.token` 并用 `X-Otel-Store-Token` 头，不要换成 `Authorization`。
+- **鉴权开关靠探测，不靠 flag。** 不带 token 试一次，401 才算开了。所以同一份报告在 auth 关时只有 14 条 —— 少了 8 条不是漏跑。
+- **`-ExpectConfiguredPort` 要填配置值，不是横幅上的端口。** 退让后横幅显示的是实际端口，填它会让 `port_fallback` 永远"没退让"。
+- **`port_fallback` 红不一定是读口的错。** 端口没被占住时它也会红，detail 会直说"这条没验到"。先看 `hold-port.ps1` 那一窗还在不在。
+- **token 比错值用等长串。** 长度不同会走"长度直接 false"那条短路，验不到比较循环。

@@ -11,6 +11,13 @@ param(
 
     [string]$Token,
 
+    # 这次就是来验鉴权的：不带 token 却被放行，判失败（默认只是记录开关状态）
+    [switch]$ExpectAuth,
+
+    # 读口**配置**的端口（不是实际端口）。给了它才算真的验了退让：
+    # 要求 config.port 等于它，且 actualPort 与之不等。
+    [int]$ExpectConfiguredPort = 0,
+
     [switch]$Json
 )
 
@@ -66,13 +73,23 @@ function Add-Check {
 }
 
 function Invoke-Readout {
-    param([string]$Url)
+    param(
+        [string]$Url,
+        # 明确不带 token：探"这个读口到底要不要鉴权"
+        [switch]$NoToken,
+        # 显式指定这次请求带的 token（用来试错值）
+        [string]$UseToken
+    )
 
     $bodyFile = [IO.Path]::GetTempFileName()
+    $headerFile = [IO.Path]::GetTempFileName()
     $errorFile = [IO.Path]::GetTempFileName()
-    $curlArgs = @('--noproxy', '*', '-sS', '-m', '10', '-o', $bodyFile, '-w', '%{http_code}')
-    if ($Token) {
-        $curlArgs += @('-H', "X-Otel-Store-Token: $Token")
+    $curlArgs = @('--noproxy', '*', '-sS', '-m', '10',
+        '-o', $bodyFile, '-D', $headerFile, '-w', '%{http_code}')
+
+    $tokenToSend = if ($NoToken) { '' } elseif ($PSBoundParameters.ContainsKey('UseToken')) { $UseToken } else { $Token }
+    if ($tokenToSend) {
+        $curlArgs += @('-H', "X-Otel-Store-Token: $tokenToSend")
     }
     $curlArgs += $Url
 
@@ -81,7 +98,18 @@ function Invoke-Readout {
 
     $body = if (Test-Path -LiteralPath $bodyFile) { [IO.File]::ReadAllText($bodyFile) } else { '' }
     $curlError = if (Test-Path -LiteralPath $errorFile) { [IO.File]::ReadAllText($errorFile) } else { '' }
-    Remove-Item -LiteralPath $bodyFile, $errorFile -Force -ErrorAction SilentlyContinue
+
+    # 只留最后一段响应头（有重定向时前面还有几段）
+    $headers = @{}
+    if (Test-Path -LiteralPath $headerFile) {
+        foreach ($line in @(Get-Content -LiteralPath $headerFile)) {
+            if ($line -match '^(?<name>[A-Za-z0-9-]+):\s*(?<value>.*)$') {
+                $headers[$Matches['name'].ToLowerInvariant()] = $Matches['value'].Trim()
+            }
+        }
+    }
+
+    Remove-Item -LiteralPath $bodyFile, $headerFile, $errorFile -Force -ErrorAction SilentlyContinue
 
     $status = 0
     foreach ($line in @($statusText)) {
@@ -92,14 +120,22 @@ function Invoke-Readout {
         Status   = $status
         ExitCode = $exitCode
         Body     = $body
+        Headers  = $headers
         Error    = $curlError.Trim()
     }
 }
 
 function Get-Json {
-    param([string]$Url)
+    param(
+        [string]$Url,
+        [switch]$NoToken,
+        [string]$UseToken
+    )
 
-    $response = Invoke-Readout -Url $Url
+    $invokeArgs = @{ Url = $Url; NoToken = $NoToken }
+    # 空串不能当「显式 token」传下去，否则会退化成"根本不带这个头"
+    if ($UseToken) { $invokeArgs['UseToken'] = $UseToken }
+    $response = Invoke-Readout @invokeArgs
     if ($response.ExitCode -ne 0) {
         Stop-WithUsageError "连不上 $Url（curl 退出码 $($response.ExitCode)）：$($response.Error)"
     }
@@ -112,9 +148,10 @@ function Get-Json {
     }
 
     [pscustomobject]@{
-        Status = $response.Status
-        Body   = $response.Body
-        Parsed = $parsed
+        Status  = $response.Status
+        Body    = $response.Body
+        Parsed  = $parsed
+        Headers = $response.Headers
     }
 }
 
@@ -207,6 +244,74 @@ function Invoke-SummaryChecks {
     $uptimeMs = [long]$summary.uptimeMs
     $driftMs = [math]::Abs(($startedMs + $uptimeMs) - $nowMs)
     Add-Check 'uptime' 'startedAt + uptimeMs 贴近当前时间' ($driftMs -le 5000) "driftMs=$driftMs uptimeMs=$uptimeMs"
+
+    # ---- 端口：配置值与实际值是两个信息，不等就说明退让过 ----
+    $configuredPort = if ($null -ne $summary.config) { $summary.config.port } else { $null }
+    $configuredOk = $null -ne $configuredPort -and [string]$configuredPort -match '^\d+$'
+    $configuredDetail = "config.port=$configuredPort"
+    if ($ExpectConfiguredPort -gt 0) {
+        $configuredOk = $configuredOk -and [int]$configuredPort -eq $ExpectConfiguredPort
+        $configuredDetail += " expected=$ExpectConfiguredPort"
+    }
+    Add-Check 'config_port' 'config.port 是配置的端口' $configuredOk $configuredDetail
+
+    if ($ExpectConfiguredPort -gt 0) {
+        $fellBack = $null -ne $actualPort -and [int]$actualPort -ne $ExpectConfiguredPort
+        $fallbackDetail = if ($fellBack) {
+            "配置=$ExpectConfiguredPort 实际=$actualPort（退让生效）"
+        } else {
+            "配置=$ExpectConfiguredPort 实际=$actualPort —— 没退让：端口没被占住，这条没验到"
+        }
+        Add-Check 'port_fallback' '占住配置端口后读口退到别的端口' ($fellBack -and $portOk) $fallbackDetail
+    }
+
+    # ---- 鉴权：先不带 token 探一次，服务端自己决定要不要拦 ----
+    $probe = Get-Json "$BaseUrl/api/summary" -NoToken
+    $authOn = $probe.Status -eq 401
+
+    if (-not $authOn) {
+        $offOk = -not $ExpectAuth
+        $offDetail = 'off（不带 token 也能读）'
+        if ($ExpectAuth) { $offDetail += ' —— 但这次指定了 -ExpectAuth，说明 auth=true 没生效' }
+        Add-Check 'auth_mode' '读口要求 token' $offOk $offDetail
+    } else {
+        Add-Check 'auth_mode' '读口要求 token' $true 'on（不带 token 返回 401）'
+
+        $challenge = [string]$probe.Headers['www-authenticate']
+        $errorCode = if ($null -ne $probe.Parsed) { [string]$probe.Parsed.error } else { '' }
+        $challengeOk = $challenge -eq 'X-Otel-Store-Token' -and $errorCode -eq 'unauthorized'
+        Add-Check 'auth_challenge' '401 指明用哪个头' $challengeOk "WWW-Authenticate=[$challenge] body.error=[$errorCode]"
+
+        if (-not $Token) {
+            Add-Check 'auth_token_ok' '带正确 token 返回 200' $false '没有 token：token 文件不存在，也没传 -Token'
+        } else {
+            $withToken = Get-Json "$BaseUrl/api/summary"
+            $withOk = $withToken.Status -eq 200 -and $null -ne $withToken.Parsed
+            Add-Check 'auth_token_ok' '带正确 token 返回 200' $withOk "status=$($withToken.Status) tokenLen=$($Token.Length)"
+
+            $wrongToken = if ($Token -eq ('0' * $Token.Length)) { '1' * $Token.Length } else { '0' * $Token.Length }
+            $wrong = Get-Json "$BaseUrl/api/summary" -UseToken $wrongToken
+            Add-Check 'auth_wrong_token' '带错误 token 返回 401' ($wrong.Status -eq 401) "status=$($wrong.Status)"
+
+            $tokenFile = Join-Path $resolvedDataDir 'otelstore.token'
+            if (Test-Path -LiteralPath $tokenFile) {
+                $fileToken = (Get-Content -LiteralPath $tokenFile -Raw).Trim()
+                $fileOk = $fileToken.Length -ge 16 -and $fileToken -notmatch '\s' -and $fileToken -eq $Token
+                Add-Check 'token_file_shape' 'token 文件与本次请求一致' $fileOk "chars=$($fileToken.Length) match=$($fileToken -eq $Token)"
+            } else {
+                Add-Check 'token_file_shape' 'token 文件与本次请求一致' $false "找不到 $tokenFile"
+            }
+
+            # token 只能出现在这一个文件里：读口自己的日志也不能有
+            $selfLog = Get-Json "$BaseUrl/api/self-log?lines=500"
+            $leaked = $null -ne $selfLog.Parsed -and $selfLog.Body.Contains($Token)
+            Add-Check 'token_absent_from_log' 'self-log 里没有 token' (-not $leaked) $(if ($leaked) { 'LOG LEAKS TOKEN' } else { "lines=$(@($selfLog.Parsed.lines).Count)" })
+
+            $readyLine = @($selfLog.Parsed.lines) | Where-Object { ([string]$_).Contains('读口就绪') } | Select-Object -Last 1
+            $authFlagOk = $null -ne $readyLine -and ([string]$readyLine).Contains('auth=on')
+            Add-Check 'log_auth_on' '就绪日志记下 auth=on' $authFlagOk $(if ($authFlagOk) { 'ok' } else { if ($readyLine) { [string]$readyLine } else { '没找到「读口就绪」那行' } })
+        }
+    }
 
     return $url
 }
