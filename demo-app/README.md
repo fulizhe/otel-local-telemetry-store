@@ -11,6 +11,12 @@ pwsh -NoProfile -File scripts/run-with-agent.ps1
 输出里会给出 PID、页面地址和日志路径。端口被占用时换端口：`-Port 18099`。
 已有构建产物、只想快点起：`-SkipBuild`。
 
+要覆盖扩展自己的配置（键必须带 `otel.` 前缀，少一个前缀只会静默回落默认值）：
+
+```powershell
+pwsh -NoProfile -File scripts/run-with-agent.ps1 -SkipBuild -OtelProperty otel.localstore.auth=true
+```
+
 只要应用不要 agent（此时 OTel 是 no-op，页面照样能用）：
 
 ```powershell

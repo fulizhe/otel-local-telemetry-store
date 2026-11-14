@@ -22,12 +22,17 @@
   pwsh -NoProfile -File scripts/run-with-agent.ps1
   pwsh -NoProfile -File scripts/run-with-agent.ps1 -Port 18099
   pwsh -NoProfile -File scripts/run-with-agent.ps1 -SkipBuild
+
+  验鉴权路径：加上扩展自己的配置覆盖（键必须带 otel. 前缀）：
+  pwsh -NoProfile -File scripts/run-with-agent.ps1 -SkipBuild -OtelProperty otel.localstore.auth=true
 #>
 [CmdletBinding()]
 param(
-  [string] $AgentJar = "D:\apps\opentelemetry-javaagent-2.32.0.jar",
-  [int]    $Port     = 18081,
-  [switch] $SkipBuild
+  [string]   $AgentJar = "D:\apps\opentelemetry-javaagent-2.32.0.jar",
+  [int]      $Port     = 18081,
+  [switch]   $SkipBuild,
+  # 原样转成 -D<值>，用来覆盖 otel.localstore.* 配置。值必须带 otel. 前缀。
+  [string[]] $OtelProperty = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -93,18 +98,24 @@ Write-Host "[4/4] 启动 ..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path (Join-Path $demoDir 'target') | Out-Null
 Remove-Item $logFile, $errFile -ErrorAction SilentlyContinue
 
-$args = @(
+$javaArgs = @(
     "-javaagent:$AgentJar",
     "-Dotel.javaagent.extensions=$($libJar.FullName)",
     # 演示期间不发往任何后端。OTLP 默认打 4318 会一直报错刷屏。
     "-Dotel.traces.exporter=none",
     "-Dotel.metrics.exporter=none",
     "-Dotel.logs.exporter=none",
-    "-Dotel.traces.sampler=always_on",
-    "-jar", $appJar.FullName,
-    "--server.port=$Port"
+    "-Dotel.traces.sampler=always_on"
 )
-$p = Start-Process -FilePath $java -ArgumentList $args -WorkingDirectory $demoDir `
+foreach ($property in $OtelProperty) {
+    # 少一个 otel. 前缀不会报错，只会静默回落默认值 —— 和扩展 jar 路径那个坑同一类。
+    if ($property -notmatch '^otel\.[A-Za-z0-9._-]+=') {
+        Fail "-OtelProperty 的值要写成 otel.<键>=<值>（收到：$property）。`n  例：-OtelProperty otel.localstore.auth=true"
+    }
+    $javaArgs += "-D$property"
+}
+$javaArgs += @("-jar", $appJar.FullName, "--server.port=$Port")
+$p = Start-Process -FilePath $java -ArgumentList $javaArgs -WorkingDirectory $demoDir `
      -RedirectStandardOutput $logFile -RedirectStandardError $errFile -PassThru -NoNewWindow
 
 # ---- 读口实际端口 -------------------------------------------------------------
@@ -135,6 +146,9 @@ if ($readoutPort) {
     Write-Host "           稍等看扩展日志里的 httpReadout=on 那行；若用 -Dotel.localstore.dataDir 改过目录，以那里为准。" -ForegroundColor Yellow
 }
 Write-Host "  扩展 jar $($libJar.Name)" -ForegroundColor DarkGray
+if ($OtelProperty.Count -gt 0) {
+    Write-Host "  覆盖配置 $($OtelProperty -join ' ')" -ForegroundColor DarkGray
+}
 Write-Host "  日志     $logFile" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "造点数据看效果：" -ForegroundColor Cyan
